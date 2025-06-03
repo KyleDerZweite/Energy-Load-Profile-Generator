@@ -28,4 +28,4 @@ ENV/
 # Pytest cache
 .pytest_cache/
 
-./config.yaml
+config.yaml
