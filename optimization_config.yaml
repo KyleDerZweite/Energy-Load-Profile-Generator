@@ -1,0 +1,156 @@
+# Enhanced Pattern Optimization Configuration
+# ==========================================
+
+# Learning Parameters
+learning_rate: 0.01
+exploration_rate: 0.1
+exploration_decay: 0.995
+min_exploration_rate: 0.01
+max_episodes: 1000
+convergence_threshold: 0.001
+max_change_per_step: 0.05
+
+# Training Data Configuration
+training_data:
+  input_file: "load_profiles.xlsx"
+  timestamp_column: "Timestamp"
+  value_column: "Value"
+  value_unit: "kW"
+  timezone: "UTC"
+  years_to_use: [2018, 2019, 2020, 2023, 2024]
+
+# Evaluation Strategy - ENHANCED SAMPLE SIZES
+evaluation:
+  use_full_dataset: false  # Set to true for full dataset
+
+  progressive_evaluation: true
+
+  # Larger sample periods for better accuracy
+  sample_periods:
+    # Winter samples (more heating data)
+    - start_month: 12  # December
+      days: 30
+    - start_month: 1   # January
+      days: 30
+    - start_month: 2   # February
+      days: 28
+
+    # Spring samples (transition period)
+    - start_month: 3   # March
+      days: 30
+    - start_month: 4   # April
+      days: 30
+
+    # Summer samples (more cooling data)
+    - start_month: 6   # June
+      days: 30
+    - start_month: 7   # July
+      days: 30
+    - start_month: 8   # August
+      days: 30
+
+    # Autumn samples (transition period)
+    - start_month: 9   # September
+      days: 30
+    - start_month: 10  # October
+      days: 30
+
+  # Progressive stages with more periods
+  # Stage 1 (Gen 1-20): 2 periods (~60k records)
+  # Stage 2 (Gen 21-40): 4 periods (~120k records)
+  # Stage 3 (Gen 41-60): 6 periods (~180k records)
+  # Stage 4 (Gen 61-80): 8 periods (~240k records)
+  # Stage 5 (Gen 81-100): All 10 periods (~300k records)
+  generations_per_stage: [20, 20, 20, 20, 20]
+
+# Alternative: Conservative Approach (fewer but longer periods)
+# evaluation:
+#   use_full_dataset: false
+#   progressive_evaluation: true
+#
+#   sample_periods:
+#     # One full month per season from different years
+#     - start_month: 1   # January (winter)
+#       days: 31
+#     - start_month: 4   # April (spring)
+#       days: 30
+#     - start_month: 7   # July (summer)
+#       days: 31
+#     - start_month: 10  # October (autumn)
+#       days: 31
+#
+#   # Stage 1: 1 season, Stage 2: 2 seasons, etc.
+#   generations_per_stage: [25, 25, 25, 25]
+
+# Alternative: Aggressive Approach (use almost full dataset progressively)
+# evaluation:
+#   use_full_dataset: false
+#   progressive_evaluation: true
+#
+#   sample_periods:
+#     # Two months per season
+#     - start_month: 12  # December-January (winter)
+#       days: 60
+#     - start_month: 3   # March-April (spring)
+#       days: 60
+#     - start_month: 6   # June-July (summer)
+#       days: 60
+#     - start_month: 9   # September-October (autumn)
+#       days: 60
+#
+#   generations_per_stage: [30, 30, 40]  # Use 1, 2, then all 4 periods
+
+# Device Constraints (unchanged)
+device_constraints:
+  air_conditioner:
+    seasonal_percentages:
+      winter: 0.05
+      spring: 0.15
+      summer: 0.50
+      autumn: 0.20
+    optimization_weight: 1.0
+    allow_optimization: true
+
+  heater:
+    seasonal_percentages:
+      winter: 0.40
+      spring: 0.20
+      summer: 0.05
+      autumn: 0.25
+    optimization_weight: 1.0
+    allow_optimization: true
+
+  general_load:
+    year_round_percentage: 0.25
+    optimization_weight: 0.8
+    allow_optimization: true
+
+  refrigeration:
+    year_round_percentage: 0.10
+    optimization_weight: 0.5
+    allow_optimization: true
+
+  lighting:
+    year_round_percentage: 0.08
+    optimization_weight: 0.6
+    allow_optimization: true
+
+  water_heater:
+    year_round_percentage: 0.12
+    optimization_weight: 0.7
+    allow_optimization: true
+
+# Reward Function Weights
+reward_weights:
+  mse_weight: 0.4
+  trend_weight: 0.3
+  peak_weight: 0.2
+  constraint_weight: 0.1
+
+# Optimization Parameters
+optimization:
+  algorithm: "genetic"
+  population_size: 40          # Increased for better exploration
+  generations: 100
+  mutation_rate: 0.08          # Slightly reduced for more focused search
+  crossover_rate: 0.8

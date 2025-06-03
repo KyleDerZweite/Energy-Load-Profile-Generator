@@ -8,3 +8,7 @@ pyyaml
 xlsxwriter
 scikit-learn
 scipy
+openpyxl
+flask
+webbrowser-open
+plotly
