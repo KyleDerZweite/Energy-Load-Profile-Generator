@@ -28,4 +28,6 @@ ENV/
 # Pytest cache
 .pytest_cache/
 
+# Config & Database
 config.yaml
+*.db

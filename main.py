@@ -81,21 +81,18 @@ def parse_arguments():
     parser.add_argument(
         '--location', '-l',
         type=str,
-        required=True,
         help='Location for weather data (e.g., "Berlin, Germany")'
     )
 
     parser.add_argument(
         '--start-date', '-s',
         type=str,
-        required=True,
         help='Start date in YYYY-MM-DD format'
     )
 
     parser.add_argument(
         '--end-date', '-e',
         type=str,
-        required=True,
         help='End date in YYYY-MM-DD format'
     )
 
