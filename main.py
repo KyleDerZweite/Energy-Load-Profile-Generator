@@ -174,6 +174,12 @@ def parse_arguments():
         help='Show database statistics and exit'
     )
 
+    parser.add_argument(
+        '--use-optimized',
+        action='store_true',
+        help='Use optimized patterns from optimized_config.yaml'
+    )
+
     return parser.parse_args()
 
 def validate_date_range(start_date: str, end_date: str) -> bool:
@@ -285,6 +291,14 @@ def generate_output_filename(config: Dict, args, format_type: str) -> str:
 def main():
     """Main execution function."""
     args = parse_arguments()
+
+    if args.use_optimized:
+        optimized_config_path = 'optimized_config.yaml'
+        if os.path.exists(optimized_config_path):
+            args.config = optimized_config_path
+            logging.getLogger(__name__).info("Using optimized configuration")
+        else:
+            logging.getLogger(__name__).warning("Optimized config not found, using default config")
 
     # Load configuration
     try:

@@ -6,3 +6,5 @@ matplotlib
 seaborn
 pyyaml
 xlsxwriter
+scikit-learn
+scipy

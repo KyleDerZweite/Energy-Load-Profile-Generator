@@ -17,7 +17,7 @@ class MultiSourceWeatherFetcher:
         self.db = WeatherDatabase(db_path)
         self.logger = logging.getLogger(__name__)
 
-        # City coordinates for German cities
+        # City coordinates for German cities (expanded list)
         self.german_city_coords = {
             'Berlin': (52.5200, 13.4050),
             'München': (48.1351, 11.5820), 'Munich': (48.1351, 11.5820),
@@ -70,10 +70,12 @@ class MultiSourceWeatherFetcher:
             'Jena': (50.9278, 11.5896),
             'Schwerin': (53.6355, 11.4010),
             'Cottbus': (51.7606, 14.3346),
-            'Bremerhaven': (53.5396, 8.5805)
+            'Bremerhaven': (53.5396, 8.5805),
+            # Added Bottrop
+            'Bottrop': (51.5217, 6.9289)
         }
 
-        # DWD station mapping for major German cities
+        # DWD station mapping for major German cities (expanded list)
         self.dwd_station_mapping = {
             'Berlin': '10382',  # Berlin-Tempelhof
             'München': '01262',  # München-Stadt
@@ -102,21 +104,79 @@ class MultiSourceWeatherFetcher:
             'Erfurt': '01270',     # Erfurt-Weimar
             'Mainz': '03032',      # Mainz
             'Kassel': '02244',     # Kassel
-            'Saarbrücken': '04336' # Saarbrücken-Burbach
+            'Saarbrücken': '04336', # Saarbrücken-Burbach
+            # Added Bottrop (using nearby Essen station)
+            'Bottrop': '01303'     # Essen-Bredeney (closest DWD station)
         }
 
     def get_coordinates(self, location: str) -> Tuple[float, float]:
-        """Get coordinates for a location."""
+        """Get coordinates for a location with improved fallback."""
         # Clean location name
         clean_location = location.replace(', Germany', '').strip()
 
+        # First check if it's in our predefined coordinates
         if clean_location in self.german_city_coords:
-            return self.german_city_coords[clean_location]
+            coords = self.german_city_coords[clean_location]
+            self.logger.info(f"Using predefined coordinates for {clean_location}: {coords}")
+            return coords
 
         # Try geocoding with Open-Meteo
+        self.logger.info(f"Geocoding {location} using Open-Meteo API")
         try:
             url = "https://geocoding-api.open-meteo.com/v1/search"
-            params = {'name': clean_location, 'count': 1, 'language': 'en', 'format': 'json'}
+            params = {
+                'name': location,  # Use full location string for better results
+                'count': 5,  # Get multiple results to choose from
+                'language': 'en',
+                'format': 'json'
+            }
+            response = requests.get(url, params=params, timeout=10)
+
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('results'):
+                    # Find the best match
+                    best_result = None
+
+                    for result in data['results']:
+                        result_name = result.get('name', '')
+                        result_country = result.get('country', '')
+                        result_admin1 = result.get('admin1', '')
+
+                        self.logger.debug(f"Geocoding result: {result_name}, {result_admin1}, {result_country}")
+
+                        # Prefer German results
+                        if result_country.lower() in ['germany', 'deutschland', 'de']:
+                            best_result = result
+                            break
+
+                        # If no German result, take the first one
+                        if best_result is None:
+                            best_result = result
+
+                    if best_result:
+                        coords = (best_result['latitude'], best_result['longitude'])
+                        location_info = f"{best_result.get('name', '')}, {best_result.get('admin1', '')}, {best_result.get('country', '')}"
+                        self.logger.info(f"Geocoded {location} to {coords} ({location_info})")
+
+                        # Cache the result for future use
+                        self.german_city_coords[clean_location] = coords
+
+                        return coords
+
+        except Exception as e:
+            self.logger.warning(f"Geocoding failed for {location}: {e}")
+
+        # Try alternative geocoding with a simpler query
+        try:
+            self.logger.info(f"Trying simplified geocoding for {clean_location}")
+            url = "https://geocoding-api.open-meteo.com/v1/search"
+            params = {
+                'name': clean_location,
+                'count': 1,
+                'language': 'en',
+                'format': 'json'
+            }
             response = requests.get(url, params=params, timeout=10)
 
             if response.status_code == 200:
@@ -124,19 +184,85 @@ class MultiSourceWeatherFetcher:
                 if data.get('results'):
                     result = data['results'][0]
                     coords = (result['latitude'], result['longitude'])
-                    self.logger.info(f"Geocoded {location} to {coords}")
-                    return coords
-        except Exception as e:
-            self.logger.warning(f"Geocoding failed for {location}: {e}")
+                    self.logger.info(f"Simplified geocoding successful for {clean_location}: {coords}")
 
-        # Default to Berlin
-        self.logger.warning(f"Using Berlin coordinates as fallback for {location}")
+                    # Cache the result
+                    self.german_city_coords[clean_location] = coords
+
+                    return coords
+
+        except Exception as e:
+            self.logger.warning(f"Simplified geocoding also failed for {location}: {e}")
+
+        # Final fallback to Berlin with warning
+        self.logger.warning(f"All geocoding attempts failed for {location}, using Berlin coordinates as fallback")
         return (52.5200, 13.4050)
 
     def get_dwd_station_id(self, location: str) -> Optional[str]:
-        """Get DWD station ID for a German city."""
+        """Get DWD station ID for a German city with improved fallback."""
         clean_location = location.replace(', Germany', '').strip()
-        return self.dwd_station_mapping.get(clean_location)
+
+        # Direct mapping
+        if clean_location in self.dwd_station_mapping:
+            station_id = self.dwd_station_mapping[clean_location]
+            self.logger.info(f"Found DWD station {station_id} for {clean_location}")
+            return station_id
+
+        # For unmapped German cities, try to find a nearby station
+        if self._is_likely_german_city(location):
+            coords = self.get_coordinates(location)
+            nearby_station = self._find_nearest_dwd_station(coords)
+            if nearby_station:
+                self.logger.info(f"Using nearest DWD station {nearby_station} for {clean_location}")
+                # Cache for future use
+                self.dwd_station_mapping[clean_location] = nearby_station
+                return nearby_station
+
+        self.logger.info(f"No suitable DWD station found for {clean_location}")
+        return None
+
+    def _is_likely_german_city(self, location: str) -> bool:
+        """Check if a location is likely in Germany."""
+        location_lower = location.lower()
+        return (
+                'germany' in location_lower or
+                'deutschland' in location_lower or
+                location_lower.endswith(', de') or
+                # Check if coordinates are within Germany bounds
+                self._is_in_germany_bounds(self.get_coordinates(location))
+        )
+
+    def _is_in_germany_bounds(self, coords: Tuple[float, float]) -> bool:
+        """Check if coordinates are within Germany's approximate bounds."""
+        lat, lon = coords
+        # Approximate bounds of Germany
+        return (47.0 <= lat <= 55.5) and (5.5 <= lon <= 15.5)
+
+    def _find_nearest_dwd_station(self, target_coords: Tuple[float, float]) -> Optional[str]:
+        """Find the nearest DWD station to given coordinates."""
+        if not self.dwd_station_mapping:
+            return None
+
+        min_distance = float('inf')
+        nearest_station = None
+        target_lat, target_lon = target_coords
+
+        for city, station_id in self.dwd_station_mapping.items():
+            if city in self.german_city_coords:
+                city_lat, city_lon = self.german_city_coords[city]
+
+                # Calculate approximate distance (simple Euclidean)
+                distance = ((target_lat - city_lat) ** 2 + (target_lon - city_lon) ** 2) ** 0.5
+
+                if distance < min_distance:
+                    min_distance = distance
+                    nearest_station = station_id
+
+        # Only return if reasonably close (within ~2 degrees)
+        if min_distance < 2.0:
+            return nearest_station
+
+        return None
 
     def fetch_open_meteo_data(self, latitude: float, longitude: float,
                               start_date: str, end_date: str) -> pd.DataFrame:
@@ -154,7 +280,7 @@ class MultiSourceWeatherFetcher:
         }
 
         try:
-            self.logger.info(f"Fetching Open-Meteo data for ({latitude}, {longitude})")
+            self.logger.info(f"Fetching Open-Meteo data for ({latitude:.4f}, {longitude:.4f})")
             response = requests.get(url, params=params, timeout=60)
             response.raise_for_status()
             data = response.json()
@@ -211,11 +337,14 @@ class MultiSourceWeatherFetcher:
         current_date = datetime.strptime(start_date, '%Y-%m-%d')
         end_dt = datetime.strptime(end_date, '%Y-%m-%d')
 
+        # Use the original location string for WeatherAPI (it handles geocoding)
+        self.logger.info(f"Using WeatherAPI with location: {location}")
+
         while current_date <= end_dt:
             url = f"{base_url}/history.json"
             params = {
                 'key': api_key,
-                'q': location,
+                'q': location,  # Pass through original location
                 'dt': current_date.strftime('%Y-%m-%d')
             }
 
@@ -277,7 +406,7 @@ class MultiSourceWeatherFetcher:
         try:
             station_id = self.get_dwd_station_id(location)
             if not station_id:
-                self.logger.warning(f"No DWD station found for {location}")
+                self.logger.info(f"No DWD station available for {location}")
                 return pd.DataFrame()
 
             # Check date range to determine which DWD service to use
@@ -438,7 +567,7 @@ class MultiSourceWeatherFetcher:
         start_dt = datetime.strptime(start_date, '%Y-%m-%d')
         current_date = datetime.now()
 
-        # Get coordinates
+        # Get coordinates for Open-Meteo
         lat, lon = self.get_coordinates(location)
 
         # Get enabled sources from config
@@ -482,8 +611,8 @@ class MultiSourceWeatherFetcher:
                         self.logger.info(f"Skipping WeatherAPI for historical data beyond 1 year ({start_date})")
 
                 elif source_name == 'dwd':
-                    # Use DWD for German locations
-                    if 'Germany' in location or location.replace(', Germany', '').strip() in self.dwd_station_mapping:
+                    # Use DWD for German locations (improved detection)
+                    if self._is_likely_german_city(location):
                         weather_data = self.fetch_dwd_data(location, start_date, end_date)
                         if not weather_data.empty:
                             self.db.store_weather_data(location, weather_data, 'dwd', lat, lon)

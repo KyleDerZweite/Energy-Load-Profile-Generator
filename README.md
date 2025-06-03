@@ -122,6 +122,23 @@ python main.py --list-locations
 python main.py --db-stats
 ```
 
+#### Pattern Optimization
+
+```bash
+# Run pattern optimization
+python pattern_optimizer.py --training-data load_profiles.xlsx --location "Berlin, Germany"
+
+# Use optimized patterns in main system
+python main.py --location "Berlin, Germany" --start-date 2024-01-01 --end-date 2024-01-31 --use-optimized
+
+# Run optimization with custom config
+python pattern_optimizer.py --training-data load_profiles.xlsx --location "Berlin, Germany" --optimization-config my_optimization.yaml
+
+# Verbose optimization
+python pattern_optimizer.py --training-data load_profiles.xlsx --location "Berlin, Germany" --verbose
+```
+
+
 ### Output Structure
 
 The generator creates the following output structure:
