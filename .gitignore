@@ -1,0 +1,31 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+# Test logs, coverage reports, and others
+*.log
+*.csv
+*.xlsx
+*.sqlite
+
+# Environments
+.env/
+.venv/
+env/
+venv/
+ENV/
+
+# Editor backups
+*.swp
+*.bak
+*.tmp
+
+# IDE/Editor specific files
+.vscode/
+.idea/
+.DS_Store
+
+# Pytest cache
+.pytest_cache/
+
+./config.yaml
