@@ -5,16 +5,18 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 import time
 import logging
+import io
+import zipfile
 from weather_database import WeatherDatabase
 
 class MultiSourceWeatherFetcher:
     """Fetches weather data from multiple sources with fallback support."""
-    
+
     def __init__(self, config: Dict, db_path: str = "weather_data.db"):
         self.config = config
         self.db = WeatherDatabase(db_path)
         self.logger = logging.getLogger(__name__)
-        
+
         # City coordinates for German cities
         self.german_city_coords = {
             'Berlin': (52.5200, 13.4050),
@@ -70,21 +72,53 @@ class MultiSourceWeatherFetcher:
             'Cottbus': (51.7606, 14.3346),
             'Bremerhaven': (53.5396, 8.5805)
         }
-    
+
+        # DWD station mapping for major German cities
+        self.dwd_station_mapping = {
+            'Berlin': '10382',  # Berlin-Tempelhof
+            'München': '01262',  # München-Stadt
+            'Hamburg': '01975',  # Hamburg-Fuhlsbüttel
+            'Köln': '02667',    # Köln-Bonn
+            'Frankfurt am Main': '01420',  # Frankfurt/Main
+            'Stuttgart': '04931',  # Stuttgart (Schnarrenberg)
+            'Düsseldorf': '01078',  # Düsseldorf
+            'Dortmund': '01073',   # Dortmund
+            'Essen': '01303',      # Essen-Bredeney
+            'Leipzig': '02928',    # Leipzig-Holzhausen
+            'Bremen': '00691',     # Bremen
+            'Dresden': '01048',    # Dresden-Klotzsche
+            'Hannover': '02014',   # Hannover
+            'Nürnberg': '03668',   # Nürnberg
+            'Duisburg': '01081',   # Düsseldorf (nearby)
+            'Bochum': '05480',     # Bochum
+            'Wuppertal': '05100',  # Wuppertal-Buchenhofen
+            'Bielefeld': '00513',  # Bielefeld
+            'Bonn': '00603',       # Bad Godesberg
+            'Mannheim': '05906',   # Mannheim
+            'Karlsruhe': '02522',  # Karlsruhe
+            'Wiesbaden': '05738',  # Wiesbaden-Schierstein
+            'Augsburg': '00232',   # Augsburg
+            'Kiel': '02261',       # Kiel-Holtenau
+            'Erfurt': '01270',     # Erfurt-Weimar
+            'Mainz': '03032',      # Mainz
+            'Kassel': '02244',     # Kassel
+            'Saarbrücken': '04336' # Saarbrücken-Burbach
+        }
+
     def get_coordinates(self, location: str) -> Tuple[float, float]:
         """Get coordinates for a location."""
         # Clean location name
         clean_location = location.replace(', Germany', '').strip()
-        
+
         if clean_location in self.german_city_coords:
             return self.german_city_coords[clean_location]
-        
+
         # Try geocoding with Open-Meteo
         try:
             url = "https://geocoding-api.open-meteo.com/v1/search"
             params = {'name': clean_location, 'count': 1, 'language': 'en', 'format': 'json'}
             response = requests.get(url, params=params, timeout=10)
-            
+
             if response.status_code == 200:
                 data = response.json()
                 if data.get('results'):
@@ -94,16 +128,21 @@ class MultiSourceWeatherFetcher:
                     return coords
         except Exception as e:
             self.logger.warning(f"Geocoding failed for {location}: {e}")
-        
+
         # Default to Berlin
         self.logger.warning(f"Using Berlin coordinates as fallback for {location}")
         return (52.5200, 13.4050)
-    
-    def fetch_open_meteo_data(self, latitude: float, longitude: float, 
-                             start_date: str, end_date: str) -> pd.DataFrame:
+
+    def get_dwd_station_id(self, location: str) -> Optional[str]:
+        """Get DWD station ID for a German city."""
+        clean_location = location.replace(', Germany', '').strip()
+        return self.dwd_station_mapping.get(clean_location)
+
+    def fetch_open_meteo_data(self, latitude: float, longitude: float,
+                              start_date: str, end_date: str) -> pd.DataFrame:
         """Fetch data from Open-Meteo ERA5."""
         url = "https://archive-api.open-meteo.com/v1/era5"
-        
+
         params = {
             'latitude': latitude,
             'longitude': longitude,
@@ -113,19 +152,19 @@ class MultiSourceWeatherFetcher:
             'timezone': 'Europe/Berlin',
             'format': 'json'
         }
-        
+
         try:
             self.logger.info(f"Fetching Open-Meteo data for ({latitude}, {longitude})")
             response = requests.get(url, params=params, timeout=60)
             response.raise_for_status()
             data = response.json()
-            
+
             if 'hourly' not in data:
                 raise ValueError("No hourly data in response")
-            
+
             hourly = data['hourly']
             timestamps = pd.to_datetime(hourly['time'])
-            
+
             weather_data = []
             for i, timestamp in enumerate(timestamps):
                 weather_data.append({
@@ -136,33 +175,42 @@ class MultiSourceWeatherFetcher:
                     'weather_code': hourly['weather_code'][i] if hourly['weather_code'][i] is not None else 0,
                     'condition': self._weather_code_to_condition(hourly['weather_code'][i] if hourly['weather_code'][i] is not None else 0)
                 })
-            
+
             df = pd.DataFrame(weather_data)
             df.set_index('datetime', inplace=True)
-            
-            # Resample to 15-minute intervals
-            df_15min = df.resample('15T').interpolate(method='linear')
-            
+
+            # Ensure proper data types before resampling
+            numeric_columns = ['temperature', 'humidity', 'precipitation', 'weather_code']
+            for col in numeric_columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            # Resample to 15-minute intervals (fixed: using 'min' instead of deprecated 'T')
+            df_15min = df.resample('15min').interpolate(method='linear')
+
+            # Handle non-numeric condition column separately
+            condition_15min = df['condition'].resample('15min').ffill()
+            df_15min['condition'] = condition_15min
+
             self.logger.info(f"Successfully fetched {len(df_15min)} Open-Meteo records")
             return df_15min
-            
+
         except Exception as e:
             self.logger.error(f"Open-Meteo fetch failed: {e}")
             return pd.DataFrame()
-    
+
     def fetch_weatherapi_data(self, location: str, start_date: str, end_date: str) -> pd.DataFrame:
         """Fetch data from WeatherAPI.com."""
         api_key = self.config.get('api_keys', {}).get('weatherapi_key')
         if not api_key or api_key == "your_weatherapi_key_here":
             self.logger.warning("WeatherAPI key not configured, skipping")
             return pd.DataFrame()
-        
+
         base_url = "http://api.weatherapi.com/v1"
         weather_data = []
-        
+
         current_date = datetime.strptime(start_date, '%Y-%m-%d')
         end_dt = datetime.strptime(end_date, '%Y-%m-%d')
-        
+
         while current_date <= end_dt:
             url = f"{base_url}/history.json"
             params = {
@@ -170,12 +218,12 @@ class MultiSourceWeatherFetcher:
                 'q': location,
                 'dt': current_date.strftime('%Y-%m-%d')
             }
-            
+
             try:
                 response = requests.get(url, params=params, timeout=30)
                 response.raise_for_status()
                 data = response.json()
-                
+
                 for hour_data in data['forecast']['forecastday'][0]['hour']:
                     weather_data.append({
                         'datetime': pd.to_datetime(hour_data['time']),
@@ -185,9 +233,9 @@ class MultiSourceWeatherFetcher:
                         'precipitation': hour_data.get('precip_mm', 0),
                         'weather_code': 0  # WeatherAPI doesn't provide WMO codes
                     })
-                
+
                 time.sleep(0.5)  # Rate limiting
-                
+
             except requests.exceptions.RequestException as e:
                 self.logger.warning(f"WeatherAPI error for {current_date}: {e}")
                 # Fill with default values
@@ -200,54 +248,229 @@ class MultiSourceWeatherFetcher:
                         'precipitation': 0,
                         'weather_code': 0
                     })
-            
+
             current_date += timedelta(days=1)
-        
+
         if not weather_data:
             return pd.DataFrame()
-        
+
         df = pd.DataFrame(weather_data)
         df.set_index('datetime', inplace=True)
-        df_15min = df.resample('15T').interpolate(method='linear')
-        
+
+        # Ensure proper data types before resampling
+        numeric_columns = ['temperature', 'humidity', 'precipitation', 'weather_code']
+        for col in numeric_columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        # Resample to 15-minute intervals with fixed syntax
+        df_15min = df.resample('15min').interpolate(method='linear')
+
+        # Handle condition column separately
+        condition_15min = df['condition'].resample('15min').ffill()
+        df_15min['condition'] = condition_15min
+
         self.logger.info(f"Successfully fetched {len(df_15min)} WeatherAPI records")
         return df_15min
-    
-    def get_weather_data(self, location: str, start_date: str, end_date: str, 
-                        force_refresh: bool = False) -> pd.DataFrame:
-        """Get weather data with intelligent source selection."""
-        
+
+    def fetch_dwd_data(self, location: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """Fetch data from DWD (Deutscher Wetterdienst)."""
+        try:
+            station_id = self.get_dwd_station_id(location)
+            if not station_id:
+                self.logger.warning(f"No DWD station found for {location}")
+                return pd.DataFrame()
+
+            # Check date range to determine which DWD service to use
+            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            current_date = datetime.now()
+
+            # For historical data (older than 1 month), use Open Data service
+            if end_dt < current_date - timedelta(days=30):
+                self.logger.info(f"Attempting to fetch DWD historical data for {start_date} to {end_date}")
+                historical_data = self._fetch_dwd_historical_data(station_id, start_date, end_date)
+                if not historical_data.empty:
+                    return historical_data
+
+            # For recent/current data, try DWD API
+            self.logger.info(f"Attempting to fetch DWD current data for {start_date} to {end_date}")
+            current_data = self._fetch_dwd_api_data(station_id, start_date, end_date)
+            return current_data
+
+        except Exception as e:
+            self.logger.error(f"DWD fetch failed: {e}")
+            return pd.DataFrame()
+
+    def _fetch_dwd_historical_data(self, station_id: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """Fetch historical data from DWD Open Data FTP."""
+        try:
+            # DWD historical data requires complex parsing of station files and data formats
+            # This is a placeholder implementation showing the approach
+
+            # For historical data, we would need to:
+            # 1. Parse station metadata files to get exact file locations
+            # 2. Download and extract ZIP files from the CDC FTP server
+            # 3. Parse fixed-width format data files
+            # 4. Handle different data formats for different time periods
+
+            self.logger.info("DWD historical data implementation requires extensive file parsing")
+            self.logger.info("Falling back to other weather sources for historical data")
+
+            # Example of what a full implementation would look like:
+            # base_url = "https://opendata.dwd.de/climate_environment/CDC/observations_germany/climate/"
+            #
+            # For hourly temperature data:
+            # url_pattern = f"{base_url}hourly/air_temperature/historical/stundenwerte_TU_{station_id}_*_hist.zip"
+            #
+            # This would require:
+            # - Downloading station list files
+            # - Matching station IDs to file names
+            # - Downloading and parsing multiple ZIP files
+            # - Handling different data formats and quality flags
+
+            return pd.DataFrame()
+
+        except Exception as e:
+            self.logger.error(f"DWD historical data fetch failed: {e}")
+            return pd.DataFrame()
+
+    def _fetch_dwd_api_data(self, station_id: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """Fetch current/forecast data from DWD API."""
+        try:
+            url = "https://app-prod-ws.warnwetter.de/v30/stationOverviewExtended"
+
+            # The DWD API expects station IDs as parameters
+            params = {'stationIds': station_id}
+
+            self.logger.info(f"Fetching DWD API data for station {station_id}")
+            response = requests.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            if station_id not in data:
+                self.logger.warning(f"No data returned for DWD station {station_id}")
+                return pd.DataFrame()
+
+            station_data = data[station_id]
+            weather_data = []
+
+            # Process forecast data (this API mainly provides forecasts, not historical data)
+            if 'forecast1' in station_data:
+                forecast = station_data['forecast1']
+                start_timestamp = forecast.get('start', 0) / 1000  # Convert from milliseconds
+                time_step = forecast.get('timeStep', 3600)  # seconds
+
+                temperatures = forecast.get('temperature', [])
+
+                for i, temp in enumerate(temperatures):
+                    timestamp = datetime.fromtimestamp(start_timestamp + i * time_step)
+
+                    # Only include data within our date range
+                    if start_date <= timestamp.strftime('%Y-%m-%d') <= end_date:
+                        weather_data.append({
+                            'datetime': timestamp,
+                            'temperature': temp / 10.0 if temp is not None else 15.0,  # DWD uses 0.1°C units
+                            'humidity': 50,  # Default, as DWD API doesn't provide humidity in this format
+                            'condition': 'Clear sky',
+                            'precipitation': 0,
+                            'weather_code': 0
+                        })
+
+            # Also try forecast2 if available
+            if 'forecast2' in station_data and not weather_data:
+                forecast = station_data['forecast2']
+                start_timestamp = forecast.get('start', 0) / 1000
+                time_step = forecast.get('timeStep', 3600)
+
+                temperatures = forecast.get('temperature', [])
+
+                for i, temp in enumerate(temperatures):
+                    timestamp = datetime.fromtimestamp(start_timestamp + i * time_step)
+
+                    if start_date <= timestamp.strftime('%Y-%m-%d') <= end_date:
+                        weather_data.append({
+                            'datetime': timestamp,
+                            'temperature': temp if temp is not None else 15.0,
+                            'humidity': 50,
+                            'condition': 'Clear sky',
+                            'precipitation': 0,
+                            'weather_code': 0
+                        })
+
+            if not weather_data:
+                self.logger.warning("No weather data extracted from DWD API response")
+                return pd.DataFrame()
+
+            df = pd.DataFrame(weather_data)
+            df.set_index('datetime', inplace=True)
+
+            # Ensure proper data types
+            numeric_columns = ['temperature', 'humidity', 'precipitation', 'weather_code']
+            for col in numeric_columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+            # Resample to 15-minute intervals with fixed syntax
+            df_15min = df.resample('15min').interpolate(method='linear')
+
+            # Handle condition column
+            condition_15min = df['condition'].resample('15min').ffill()
+            df_15min['condition'] = condition_15min
+
+            self.logger.info(f"Successfully fetched {len(df_15min)} DWD records")
+            return df_15min
+
+        except Exception as e:
+            self.logger.error(f"DWD API fetch failed: {e}")
+            return pd.DataFrame()
+
+    def get_weather_data(self, location: str, start_date: str, end_date: str,
+                         force_refresh: bool = False, preferred_source: str = None) -> pd.DataFrame:
+        """Get weather data with intelligent source selection and optional source preference."""
+
         # Check if data exists locally
         if not force_refresh:
             availability = self.db.check_data_availability(location, start_date, end_date)
             if availability['location_exists'] and availability['coverage'] > 0.95:
                 self.logger.info(f"Using cached data for {location} (Coverage: {availability['coverage']:.1%})")
                 return self.db.get_weather_data(location, start_date, end_date)
-        
-        # Determine best source based on date range
+
+        # Determine best source based on date range and preference
         start_dt = datetime.strptime(start_date, '%Y-%m-%d')
         current_date = datetime.now()
-        
+
         # Get coordinates
         lat, lon = self.get_coordinates(location)
-        
-        # Try sources in priority order
+
+        # Get enabled sources from config
         weather_sources = self.config.get('weather_sources', [])
         enabled_sources = [s for s in weather_sources if s.get('enabled', True)]
-        enabled_sources.sort(key=lambda x: x.get('priority', 10))
-        
+
+        # If a preferred source is specified, try it first
+        if preferred_source:
+            preferred_sources = [s for s in enabled_sources if s['name'] == preferred_source]
+            other_sources = [s for s in enabled_sources if s['name'] != preferred_source]
+            enabled_sources = preferred_sources + other_sources
+
+            if preferred_sources:
+                self.logger.info(f"Using preferred weather source: {preferred_source}")
+            else:
+                self.logger.warning(f"Preferred source '{preferred_source}' not found or not enabled")
+
+        # Sort by priority if no preference specified
+        if not preferred_source:
+            enabled_sources.sort(key=lambda x: x.get('priority', 10))
+
+        # Try sources in order
         for source in enabled_sources:
             source_name = source['name']
-            
+
             try:
                 if source_name == 'open_meteo':
-                    # Use Open-Meteo for historical data (especially older than 1 year)
-                    if start_dt < current_date - timedelta(days=365) or force_refresh:
-                        weather_data = self.fetch_open_meteo_data(lat, lon, start_date, end_date)
-                        if not weather_data.empty:
-                            self.db.store_weather_data(location, weather_data, 'open_meteo', lat, lon)
-                            return weather_data
-                
+                    weather_data = self.fetch_open_meteo_data(lat, lon, start_date, end_date)
+                    if not weather_data.empty:
+                        self.db.store_weather_data(location, weather_data, 'open_meteo', lat, lon)
+                        return weather_data
+
                 elif source_name == 'weatherapi':
                     # Use WeatherAPI for recent data (within 1 year)
                     if start_dt >= current_date - timedelta(days=365):
@@ -255,15 +478,27 @@ class MultiSourceWeatherFetcher:
                         if not weather_data.empty:
                             self.db.store_weather_data(location, weather_data, 'weatherapi', lat, lon)
                             return weather_data
-                
+                    else:
+                        self.logger.info(f"Skipping WeatherAPI for historical data beyond 1 year ({start_date})")
+
+                elif source_name == 'dwd':
+                    # Use DWD for German locations
+                    if 'Germany' in location or location.replace(', Germany', '').strip() in self.dwd_station_mapping:
+                        weather_data = self.fetch_dwd_data(location, start_date, end_date)
+                        if not weather_data.empty:
+                            self.db.store_weather_data(location, weather_data, 'dwd', lat, lon)
+                            return weather_data
+                    else:
+                        self.logger.info(f"Skipping DWD for non-German location: {location}")
+
             except Exception as e:
                 self.logger.error(f"Error fetching from {source_name}: {e}")
                 continue
-        
+
         # If all sources fail, return empty DataFrame
         self.logger.error(f"All weather sources failed for {location}")
         return pd.DataFrame()
-    
+
     def _weather_code_to_condition(self, code: int) -> str:
         """Convert WMO weather code to readable condition."""
         code_map = {

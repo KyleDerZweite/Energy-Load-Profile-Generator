@@ -132,63 +132,116 @@ class ConfigManager:
         ]
 
     def _get_default_device_configs(self) -> Dict[str, Dict[str, Any]]:
-        """Get default device configurations."""
+        """Get default device configurations with exactly 96 values (15-minute intervals)."""
         return {
             'heater': {
-                'base_power': 2000,
+                'peak_power': 2000,
                 'temp_coefficient': -50,
                 'comfort_temp': 20,
-                'seasonal_factor': 1.2,
-                'daily_pattern': [0.8, 0.6, 0.5, 0.4, 0.4, 0.6, 1.0, 0.9, 0.7, 0.6, 0.6, 0.7,
-                                  0.8, 0.8, 0.9, 1.0, 1.2, 1.3, 1.2, 1.1, 1.0, 0.9, 0.8, 0.8],
+                'daily_pattern': self._generate_default_pattern('heater'),
                 'enabled': True
             },
             'air_conditioner': {
-                'base_power': 1500,
+                'peak_power': 2000,
                 'temp_coefficient': 80,
                 'comfort_temp': 22,
-                'seasonal_factor': 1.0,
-                'daily_pattern': [0.3, 0.2, 0.2, 0.2, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9, 1.1, 1.3,
-                                  1.4, 1.3, 1.2, 1.1, 1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3],
+                'daily_pattern': self._generate_default_pattern('air_conditioner'),
                 'enabled': True
             },
             'refrigeration': {
-                'base_power': 800,
+                'peak_power': 800,
                 'temp_coefficient': 15,
                 'comfort_temp': 15,
-                'seasonal_factor': 1.0,
-                'daily_pattern': [0.9, 0.8, 0.8, 0.8, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.2, 1.1,
-                                  1.0, 1.0, 1.1, 1.2, 1.3, 1.2, 1.1, 1.0, 0.9, 0.9, 0.9, 0.9],
+                'daily_pattern': self._generate_default_pattern('refrigeration'),
                 'enabled': True
             },
             'general_load': {
-                'base_power': 1000,
+                'peak_power': 1000,
                 'temp_coefficient': 0,
                 'comfort_temp': 20,
-                'seasonal_factor': 1.0,
-                'daily_pattern': [0.4, 0.3, 0.3, 0.3, 0.3, 0.4, 0.8, 1.0, 0.9, 0.8, 0.8, 0.9,
-                                  1.0, 0.9, 0.8, 0.9, 1.2, 1.4, 1.3, 1.1, 0.9, 0.7, 0.6, 0.5],
+                'daily_pattern': self._generate_default_pattern('general_load'),
                 'enabled': True
             },
             'lighting': {
-                'base_power': 300,
+                'peak_power': 300,
                 'temp_coefficient': 0,
                 'comfort_temp': 20,
-                'seasonal_factor': 1.1,
-                'daily_pattern': [0.1, 0.1, 0.1, 0.1, 0.1, 0.2, 0.4, 0.6, 0.7, 0.5, 0.4, 0.4,
-                                  0.4, 0.4, 0.5, 0.7, 1.0, 1.2, 1.3, 1.2, 1.0, 0.8, 0.6, 0.3],
+                'daily_pattern': self._generate_default_pattern('lighting'),
                 'enabled': True
             },
             'water_heater': {
-                'base_power': 2500,
+                'peak_power': 2500,
                 'temp_coefficient': -30,
                 'comfort_temp': 18,
-                'seasonal_factor': 1.0,
-                'daily_pattern': [0.3, 0.2, 0.2, 0.2, 0.3, 0.6, 1.2, 1.0, 0.7, 0.5, 0.4, 0.5,
-                                  0.6, 0.5, 0.4, 0.5, 0.7, 1.0, 1.2, 1.1, 0.9, 0.7, 0.5, 0.4],
+                'daily_pattern': self._generate_default_pattern('water_heater'),
                 'enabled': True
             }
         }
+
+    def _generate_default_pattern(self, device_type: str) -> List[float]:
+        """Generate default 96-value (15-minute interval) patterns for devices."""
+
+        if device_type == 'heater':
+            # Night: 0.8-0.4 (24), Morning: 0.6-1.0 (24), Day: 0.6-1.0 (24), Evening: 1.0-0.8 (24)
+            pattern = (
+                    [0.8] * 4 + [0.7] * 4 + [0.6] * 4 + [0.5] * 4 + [0.4] * 8 +  # 00:00-05:45 (24)
+                    [0.6, 0.7, 0.8, 0.9] + [1.0] * 4 + [0.9, 0.8] + [0.7] * 4 + [0.6] * 8 + [0.7] * 4 +  # 06:00-11:45 (24)
+                    [0.7] * 4 + [0.8] * 8 + [0.9] * 4 + [1.0] * 8 +  # 12:00-17:45 (24)
+                    [1.0] * 16 + [0.9] * 4 + [0.8] * 4  # 18:00-23:45 (24)
+            )
+        elif device_type == 'air_conditioner':
+            # Night: 0.05-0.25 (24), Morning: 0.3-0.8 (24), Day: 0.85-1.0 (24), Evening: 0.85-0.4 (24)
+            pattern = (
+                    [0.1] * 4 + [0.05] * 4 + [0.1] * 4 + [0.15] * 4 + [0.2] * 4 + [0.25] * 4 +  # 00:00-05:45 (24)
+                    [0.3] * 8 + [0.5] * 4 + [0.6] * 4 + [0.7] * 4 + [0.8] * 4 +  # 06:00-11:45 (24)
+                    [0.85] * 4 + [0.9] * 4 + [0.95] * 4 + [1.0] * 4 + [0.95] * 4 + [0.9] * 4 +  # 12:00-17:45 (24)
+                    [0.85] * 4 + [0.8] * 4 + [0.7] * 4 + [0.6] * 4 + [0.5] * 4 + [0.4] * 4  # 18:00-23:45 (24)
+            )
+        elif device_type == 'refrigeration':
+            # Constant with slight variations
+            pattern = (
+                    [0.9] * 4 + [0.8] * 20 +  # 00:00-05:45 (24)
+                    [0.9] * 4 + [1.0] * 20 +  # 06:00-11:45 (24)
+                    [1.0] * 24 +  # 12:00-17:45 (24)
+                    [1.0] * 20 + [0.9] * 4  # 18:00-23:45 (24)
+            )
+        elif device_type == 'general_load':
+            # Night: 0.3-0.4 (24), Morning: 0.4-1.0 (24), Day: 0.8-1.0 (24), Evening: 1.0-0.7 (24)
+            pattern = (
+                    [0.4] * 4 + [0.3] * 20 +  # 00:00-05:45 (24)
+                    [0.4] * 4 + [0.6] * 4 + [0.8] * 4 + [1.0] * 4 + [0.9] * 4 + [0.8] * 4 +  # 06:00-11:45 (24)
+                    [0.8] * 4 + [0.9] * 4 + [1.0] * 4 + [0.9] * 4 + [0.8] * 4 + [0.9] * 4 +  # 12:00-17:45 (24)
+                    [1.0] * 16 + [0.9] * 4 + [0.7] * 4  # 18:00-23:45 (24)
+            )
+        elif device_type == 'lighting':
+            # Night: 0.1 (24), Morning: 0.2-0.7 (24), Day: 0.4-0.6 (24), Evening: 0.7-1.0 (24)
+            pattern = (
+                    [0.1] * 24 +  # 00:00-05:45 (24)
+                    [0.2] * 4 + [0.4] * 4 + [0.6] * 4 + [0.7] * 4 + [0.5] * 4 + [0.4] * 4 +  # 06:00-11:45 (24)
+                    [0.4] * 16 + [0.5] * 4 + [0.6] * 4 +  # 12:00-17:45 (24)
+                    [0.7] * 4 + [0.8] * 4 + [1.0] * 16  # 18:00-23:45 (24)
+            )
+        elif device_type == 'water_heater':
+            # Night: 0.2-0.3 (24), Morning: 0.3-1.0 (24), Day: 0.4-0.6 (24), Evening: 0.7-1.0 (24)
+            pattern = (
+                    [0.3] * 4 + [0.2] * 20 +  # 00:00-05:45 (24)
+                    [0.3] * 4 + [0.6] * 4 + [1.0] * 8 + [0.7] * 4 + [0.5] * 4 +  # 06:00-11:45 (24)
+                    [0.4] * 4 + [0.5] * 4 + [0.6] * 4 + [0.5] * 4 + [0.4] * 4 + [0.5] * 4 +  # 12:00-17:45 (24)
+                    [0.7] * 4 + [0.8] * 4 + [1.0] * 8 + [1.0] * 4 + [0.9] * 4  # 18:00-23:45 (24)
+            )
+        else:
+            # Default pattern
+            pattern = [0.5] * 96
+
+        # Ensure we have exactly 96 values
+        if len(pattern) != 96:
+            # Pad or truncate to 96 values
+            if len(pattern) < 96:
+                pattern.extend([0.5] * (96 - len(pattern)))
+            else:
+                pattern = pattern[:96]
+
+        return pattern
 
     def _get_default_locations(self) -> Dict[str, List[str]]:
         """Get default German cities."""
@@ -294,7 +347,7 @@ class ConfigManager:
 
     def validate_device_config(self, device_name: str, device_config: Dict[str, Any]) -> bool:
         """Validate device configuration."""
-        required_fields = ['base_power', 'temp_coefficient', 'comfort_temp', 'daily_pattern']
+        required_fields = ['peak_power', 'temp_coefficient', 'comfort_temp', 'daily_pattern']
 
         for field in required_fields:
             if field not in device_config:
@@ -303,16 +356,27 @@ class ConfigManager:
 
         # Validate daily pattern
         daily_pattern = device_config['daily_pattern']
-        if not isinstance(daily_pattern, list) or len(daily_pattern) != 24:
-            self.logger.error(f"Device '{device_name}' has invalid daily_pattern (must be list of 24 values)")
+        if not isinstance(daily_pattern, list) or len(daily_pattern) != 96:
+            self.logger.error(f"Device '{device_name}' has invalid daily_pattern (must be list of 96 values for 15-min intervals), got {len(daily_pattern)} values")
             return False
 
+        # Validate daily pattern values are between 0.0 and 1.0
+        for i, value in enumerate(daily_pattern):
+            if not isinstance(value, (int, float)) or value < 0.0 or value > 1.0:
+                self.logger.error(f"Device '{device_name}' daily_pattern[{i}] = {value} must be between 0.0 and 1.0")
+                return False
+
         # Validate numeric values
-        numeric_fields = ['base_power', 'temp_coefficient', 'comfort_temp']
+        numeric_fields = ['peak_power', 'temp_coefficient', 'comfort_temp']
         for field in numeric_fields:
             if not isinstance(device_config[field], (int, float)):
                 self.logger.error(f"Device '{device_name}' field '{field}' must be numeric")
                 return False
+
+        # Validate peak_power is positive
+        if device_config['peak_power'] <= 0:
+            self.logger.error(f"Device '{device_name}' peak_power must be positive")
+            return False
 
         return True
 

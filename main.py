@@ -2,13 +2,6 @@
 """
 Energy Load Profile Generator - Main Script
 ==========================================
-
-This script generates energy load profiles by correlating weather data
-with device usage patterns. It supports multiple weather sources,
-comprehensive analysis, and various export formats.
-
-Author: Kyle Der Zweite
-License: MIT
 """
 
 import os
@@ -81,18 +74,21 @@ def parse_arguments():
     parser.add_argument(
         '--location', '-l',
         type=str,
+        required=True,
         help='Location for weather data (e.g., "Berlin, Germany")'
     )
 
     parser.add_argument(
         '--start-date', '-s',
         type=str,
+        required=True,
         help='Start date in YYYY-MM-DD format'
     )
 
     parser.add_argument(
         '--end-date', '-e',
         type=str,
+        required=True,
         help='End date in YYYY-MM-DD format'
     )
 
@@ -122,6 +118,12 @@ def parse_arguments():
         '--format', '-f',
         choices=['csv', 'xlsx', 'both'],
         help='Output format (overrides config)'
+    )
+
+    parser.add_argument(
+        '--weather-source', '-w',
+        choices=['open_meteo', 'weatherapi', 'dwd'],
+        help='Preferred weather data source (optional)'
     )
 
     parser.add_argument(
@@ -161,6 +163,12 @@ def parse_arguments():
     )
 
     parser.add_argument(
+        '--list-weather-sources',
+        action='store_true',
+        help='List available weather sources and exit'
+    )
+
+    parser.add_argument(
         '--db-stats',
         action='store_true',
         help='Show database statistics and exit'
@@ -197,15 +205,15 @@ def list_devices(config_manager: ConfigManager):
     enabled_devices = config_manager.get_enabled_devices()
 
     print("\n=== Available Devices ===")
-    print(f"{'Device Name':<20} {'Base Power (W)':<15} {'Status':<10} {'Description'}")
+    print(f"{'Device Name':<20} {'Peak Power (W)':<15} {'Status':<10} {'Description'}")
     print("-" * 70)
 
     for device_name, device_config in devices.items():
         status = "Enabled" if device_name in enabled_devices else "Disabled"
-        base_power = device_config.get('base_power', 0)
+        peak_power = device_config.get('peak_power', 0)
         comfort_temp = device_config.get('comfort_temp', 20)
 
-        print(f"{device_name:<20} {base_power:<15} {status:<10} "
+        print(f"{device_name:<20} {peak_power:<15} {status:<10} "
               f"Comfort temp: {comfort_temp}°C")
 
     print(f"\nDefault devices: {', '.join(config_manager.get_value('load_profile', 'default_devices') or [])}")
@@ -217,6 +225,25 @@ def list_locations(config_manager: ConfigManager):
     print("\n=== Priority German Cities ===")
     for i, city in enumerate(locations, 1):
         print(f"{i:2d}. {city}")
+
+def list_weather_sources(config_manager: ConfigManager):
+    """List available weather sources."""
+    sources = config_manager.get_value('weather_sources') or []
+
+    print("\n=== Available Weather Sources ===")
+    print(f"{'Source':<15} {'Enabled':<8} {'Priority':<8} {'Description'}")
+    print("-" * 80)
+
+    for source in sources:
+        name = source.get('name', 'Unknown')
+        enabled = "Yes" if source.get('enabled', False) else "No"
+        priority = source.get('priority', 'N/A')
+        description = source.get('description', 'No description')
+
+        print(f"{name:<15} {enabled:<8} {priority:<8} {description}")
+
+    print("\nUsage: --weather-source <source_name>")
+    print("Example: --weather-source dwd")
 
 def show_database_stats(config_manager: ConfigManager):
     """Show database statistics."""
@@ -244,6 +271,10 @@ def generate_output_filename(config: Dict, args, format_type: str) -> str:
     location_clean = args.location.replace(', ', '_').replace(' ', '_').replace(',', '')
 
     filename = f"{prefix}_{location_clean}_{args.start_date}_to_{args.end_date}"
+
+    # Add weather source if specified
+    if args.weather_source:
+        filename += f"_{args.weather_source}"
 
     if output_config.get('add_timestamp', True):
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -282,6 +313,10 @@ def main():
         list_locations(config_manager)
         return
 
+    if args.list_weather_sources:
+        list_weather_sources(config_manager)
+        return
+
     if args.db_stats:
         show_database_stats(config_manager)
         return
@@ -294,6 +329,14 @@ def main():
     # Validate date range
     if not validate_date_range(args.start_date, args.end_date):
         sys.exit(1)
+
+    # Validate weather source if specified
+    if args.weather_source:
+        available_sources = [s['name'] for s in config.get('weather_sources', [])]
+        if args.weather_source not in available_sources:
+            logger.error(f"Invalid weather source '{args.weather_source}'. Available: {', '.join(available_sources)}")
+            sys.exit(1)
+        logger.info(f"Using preferred weather source: {args.weather_source}")
 
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
@@ -319,11 +362,15 @@ def main():
 
         # Step 1: Fetch weather data
         logger.info(f"Fetching weather data for {args.location} from {args.start_date} to {args.end_date}")
+        if args.weather_source:
+            logger.info(f"Preferred weather source: {args.weather_source}")
+
         weather_data = weather_fetcher.get_weather_data(
             args.location,
             args.start_date,
             args.end_date,
-            force_refresh=args.force_refresh
+            force_refresh=args.force_refresh,
+            preferred_source=args.weather_source
         )
 
         if weather_data.empty:
@@ -372,6 +419,8 @@ def main():
         logger.info("=== Generation Complete ===")
         logger.info(f"Location: {args.location}")
         logger.info(f"Period: {args.start_date} to {args.end_date}")
+        if args.weather_source:
+            logger.info(f"Weather source: {args.weather_source}")
         logger.info(f"Total energy: {basic_stats.get('total_energy_kwh', 0):.2f} kWh")
         logger.info(f"Average power: {basic_stats.get('average_power_w', 0):.0f} W")
         logger.info(f"Peak power: {basic_stats.get('max_power_w', 0):.0f} W")
@@ -390,6 +439,8 @@ def main():
 
         print(f"\n✅ Energy load profile generated successfully!")
         print(f"📁 Output files saved to: {args.output_dir}")
+        if args.weather_source:
+            print(f"🌦️  Weather data source: {args.weather_source}")
 
     except KeyboardInterrupt:
         logger.info("Process interrupted by user")
