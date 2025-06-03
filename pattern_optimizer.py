@@ -1047,7 +1047,7 @@ class PatternOptimizer:
 
         return mutated
 
-    def save_optimized_config(self, output_path: str = "optimized_config.yaml"):
+    def save_optimized_config(self, output_path: str = "optimized_config.yaml.tmp"):
         """Save optimized patterns to a new config file."""
         if not self.best_patterns:
             self.logger.warning("No optimized patterns to save")
@@ -1187,7 +1187,7 @@ def main():
     parser.add_argument('--location', required=True, help='Location for weather data')
     parser.add_argument('--config', default='config.yaml', help='Main configuration file')
     parser.add_argument('--optimization-config', default='optimization_config.yaml', help='Optimization configuration file')
-    parser.add_argument('--output', default='optimized_config.yaml', help='Output path for optimized config')
+    parser.add_argument('--output', default='optimized_config.yaml.tmp', help='Output path for optimized config')
     parser.add_argument('--plots-dir', default='optimization_plots', help='Directory for output plots')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
     parser.add_argument('--no-live-monitor', action='store_true', help='Disable live monitoring web interface')

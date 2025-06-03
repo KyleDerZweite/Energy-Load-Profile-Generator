@@ -177,7 +177,7 @@ def parse_arguments():
     parser.add_argument(
         '--use-optimized',
         action='store_true',
-        help='Use optimized patterns from optimized_config.yaml'
+        help='Use optimized patterns from optimized_config.yaml.tmp'
     )
 
     return parser.parse_args()
