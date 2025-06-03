@@ -30,7 +30,7 @@ ENV/
 
 # Config & Database
 config.yaml
-optimized_config.yaml.tmp
+optimized_config.yaml
 *.db
 
 # Output
