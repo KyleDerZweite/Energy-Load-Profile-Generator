@@ -39,7 +39,6 @@ import plotly.utils
 # Import existing modules
 from config_manager import ConfigManager
 from device_calculator import DeviceLoadCalculator
-from weather_database import WeatherDatabase
 from weather_fetcher import MultiSourceWeatherFetcher
 
 class PatternOptimizer:

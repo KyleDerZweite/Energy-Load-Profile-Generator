@@ -31,10 +31,11 @@ ENV/
 
 # Config & Database
 config.yaml
-optimized_config.yaml
+*optimized_config.yaml
 *.db
 
 # Output
 /output/
 /optimization_plots/
+/config_archive/
 
