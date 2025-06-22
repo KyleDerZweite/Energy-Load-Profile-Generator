@@ -38,4 +38,6 @@ config.yaml
 /output/
 /optimization_plots/
 /config_archive/
+.claude/
+devices.json
 
