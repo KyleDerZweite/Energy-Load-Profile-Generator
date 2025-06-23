@@ -20,6 +20,11 @@ from typing import Dict, List, Union, Tuple, Any
 import logging
 from scipy import signal
 from scipy.interpolate import interp1d
+try:
+    from sklearn.preprocessing import StandardScaler
+    HAS_SKLEARN = True
+except ImportError:
+    HAS_SKLEARN = False
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -762,7 +767,10 @@ class IntelligentDeviceLearner:
     """Intelligent device discovery and parameter learning from load profiles."""
     
     def __init__(self):
-        self.scaler = StandardScaler()
+        if HAS_SKLEARN:
+            self.scaler = StandardScaler()
+        else:
+            self.scaler = None
         self.device_signatures = self._load_device_signatures()
     
     def _load_device_signatures(self) -> Dict[str, Dict]:
@@ -1327,3 +1335,933 @@ class ResponsiveDevice:
             power_output[i] = alpha * power_output[i] + (1 - alpha) * power_output[i-1]
         
         return power_output
+
+
+class MultiScalePatternLearner:
+    """Multi-scale pattern learning for device optimization with genetic algorithms."""
+    
+    def __init__(self):
+        self.patterns = {}
+        self.logger = logging.getLogger(__name__)
+        self.target_data = None
+        self.device_configs = {}
+        
+    def set_target_data(self, target_load_profile: pd.DataFrame):
+        """Set the target load profile to match during optimization."""
+        if 'Value' in target_load_profile.columns:
+            self.target_data = target_load_profile['Value'].values
+        elif 'total_power' in target_load_profile.columns:
+            # Convert from W to kW if needed
+            self.target_data = target_load_profile['total_power'].values
+            if self.target_data.mean() > 1000:  # Likely in Watts
+                self.target_data = self.target_data / 1000
+        else:
+            # Use first numeric column
+            numeric_cols = target_load_profile.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                self.target_data = target_load_profile[numeric_cols[0]].values
+        
+        self.logger.info(f"Target data set: {len(self.target_data)} points, range {self.target_data.min():.1f}-{self.target_data.max():.1f} kW")
+    
+    def learn_patterns(self, device_configs: Dict, target_profile: pd.DataFrame = None, 
+                      weather_data: pd.DataFrame = None) -> Dict:
+        """Learn optimal device patterns using genetic algorithm optimization."""
+        
+        if target_profile is not None:
+            self.set_target_data(target_profile)
+        
+        if self.target_data is None:
+            self.logger.error("No target data set for pattern learning")
+            return {'learned': False, 'error': 'No target data'}
+        
+        self.device_configs = device_configs
+        
+        # Extract target daily pattern (average over all days)
+        target_daily_pattern = self._extract_target_daily_pattern()
+        target_stats = self._calculate_target_statistics()
+        
+        # Initialize genetic algorithm for device pattern optimization
+        optimized_patterns = self._genetic_algorithm_optimization(
+            target_daily_pattern, target_stats, weather_data
+        )
+        
+        # Validate optimized patterns with physics engine
+        physics_validation = self._validate_physics_compliance(optimized_patterns)
+        
+        # Calculate learning confidence
+        confidence_scores = self._calculate_learning_confidence(optimized_patterns, physics_validation)
+        
+        results = {
+            'learned': True,
+            'patterns': optimized_patterns,
+            'target_daily_pattern': target_daily_pattern.tolist(),
+            'target_statistics': target_stats,
+            'physics_validation': physics_validation,
+            'confidence_scores': confidence_scores,
+            'optimization_summary': {
+                'devices_optimized': len(optimized_patterns),
+                'target_match_score': self._calculate_target_match_score(optimized_patterns),
+                'physics_compliance_score': physics_validation.get('overall_score', 0),
+                'pattern_realism_score': self._calculate_pattern_realism_score(optimized_patterns)
+            }
+        }
+        
+        self.logger.info(f"Pattern learning completed: {len(optimized_patterns)} devices optimized")
+        return results
+    
+    def _extract_target_daily_pattern(self) -> np.ndarray:
+        """Extract average daily pattern from target data."""
+        
+        # Assume 15-minute intervals (96 per day)
+        intervals_per_day = 96
+        num_days = len(self.target_data) // intervals_per_day
+        
+        if num_days == 0:
+            # Less than a day of data, repeat to fill 96 intervals
+            repeated_data = np.tile(self.target_data, intervals_per_day // len(self.target_data) + 1)
+            return repeated_data[:intervals_per_day]
+        
+        # Reshape into days and calculate average daily pattern
+        reshaped_data = self.target_data[:num_days * intervals_per_day].reshape(num_days, intervals_per_day)
+        daily_pattern = np.mean(reshaped_data, axis=0)
+        
+        # Ensure pattern loops properly (first and last values should be similar)
+        self._ensure_pattern_loops(daily_pattern)
+        
+        return daily_pattern
+    
+    def _ensure_pattern_loops(self, pattern: np.ndarray) -> None:
+        """Ensure daily pattern loops properly by smoothing start/end transition."""
+        
+        # Smooth the transition between end and start
+        window_size = 4  # 1 hour on each end
+        
+        start_values = pattern[:window_size]
+        end_values = pattern[-window_size:]
+        
+        # Calculate target transition value (average of start and end)
+        transition_target = (start_values.mean() + end_values.mean()) / 2
+        
+        # Apply smooth transition
+        for i in range(window_size):
+            weight = i / (window_size - 1)  # 0 to 1
+            pattern[i] = (1 - weight) * transition_target + weight * pattern[i]
+            pattern[-(i+1)] = (1 - weight) * transition_target + weight * pattern[-(i+1)]
+    
+    def _calculate_target_statistics(self) -> Dict:
+        """Calculate key statistics from target data."""
+        
+        return {
+            'total_energy_kwh': float(self.target_data.sum() * 0.25),  # 15-min intervals
+            'average_power_kw': float(self.target_data.mean()),
+            'peak_power_kw': float(self.target_data.max()),
+            'min_power_kw': float(self.target_data.min()),
+            'load_factor': float(self.target_data.mean() / self.target_data.max()),
+            'variability': float(self.target_data.std() / self.target_data.mean()),
+            'daily_peak_to_avg_ratio': float(self._extract_target_daily_pattern().max() / self._extract_target_daily_pattern().mean())
+        }
+    
+    def _genetic_algorithm_optimization(self, target_pattern: np.ndarray, 
+                                      target_stats: Dict, weather_data: pd.DataFrame = None) -> Dict:
+        """Genetic algorithm optimization of device patterns."""
+        
+        from scipy.optimize import differential_evolution
+        
+        optimized_patterns = {}
+        enabled_devices = [name for name, config in self.device_configs.items() if config.get('enabled', True)]
+        
+        self.logger.info(f"Starting genetic optimization for {len(enabled_devices)} devices")
+        
+        for device_name in enabled_devices:
+            self.logger.info(f"Optimizing patterns for {device_name}")
+            
+            # Define optimization bounds for daily pattern (96 values between 0 and 1)
+            bounds = [(0.0, 1.0) for _ in range(96)]
+            
+            # Define objective function for this device
+            def objective(pattern_genes):
+                return self._evaluate_device_pattern(device_name, pattern_genes, target_pattern, target_stats)
+            
+            # Run differential evolution (genetic algorithm variant)
+            result = differential_evolution(
+                objective,
+                bounds,
+                seed=42,
+                maxiter=50,  # Reasonable number of iterations
+                popsize=15,  # Population size
+                atol=1e-6,
+                tol=1e-6,
+                workers=1  # Single threaded for stability
+            )
+            
+            # Store optimized pattern
+            optimized_pattern = result.x.tolist()
+            
+            # Ensure pattern is realistic and loops properly
+            optimized_pattern = self._post_process_pattern(optimized_pattern, device_name)
+            
+            optimized_patterns[device_name] = {
+                'daily_pattern': optimized_pattern,
+                'optimization_score': float(result.fun),
+                'pattern_energy': float(np.array(optimized_pattern).sum() * 0.25),
+                'pattern_peak': float(max(optimized_pattern)),
+                'pattern_avg': float(np.mean(optimized_pattern)),
+                'convergence_success': bool(result.success)
+            }
+            
+            self.logger.info(f"{device_name} optimization: score={result.fun:.3f}, success={result.success}")
+        
+        return optimized_patterns
+    
+    def _evaluate_device_pattern(self, device_name: str, pattern_genes: np.ndarray,
+                               target_pattern: np.ndarray, target_stats: Dict) -> float:
+        """Evaluate a device pattern using multi-objective scoring."""
+        
+        # Convert genes to proper pattern
+        daily_pattern = np.array(pattern_genes)
+        
+        # Get device configuration
+        device_config = self.device_configs.get(device_name, {})
+        peak_power_w = device_config.get('peak_power', 1000)
+        quantity = device_config.get('quantity', 1)
+        
+        # Scale pattern to power values (kW)
+        device_power_kw = daily_pattern * peak_power_w * quantity / 1000
+        
+        # Physics-based constraints scoring
+        physics_score = self._evaluate_physics_constraints(daily_pattern, device_name)
+        
+        # Pattern realism scoring
+        realism_score = self._evaluate_pattern_realism(daily_pattern, device_name)
+        
+        # Target matching scoring (contribution to total load)
+        target_match_score = self._evaluate_target_contribution(device_power_kw, target_pattern, device_name)
+        
+        # Pattern smoothness scoring
+        smoothness_score = self._evaluate_pattern_smoothness(daily_pattern)
+        
+        # Combined objective (minimize, so negate good scores)
+        total_score = (
+            -0.35 * target_match_score +    # Most important: match target
+            -0.25 * physics_score +         # Physics compliance
+            -0.20 * realism_score +         # Pattern realism
+            -0.20 * smoothness_score        # Smooth transitions
+        )
+        
+        return total_score
+    
+    def _evaluate_physics_constraints(self, pattern: np.ndarray, device_name: str) -> float:
+        """Evaluate physics-based constraints for the pattern."""
+        
+        score = 100.0
+        
+        # Check for realistic power transitions
+        transitions = np.abs(np.diff(pattern))
+        max_transition = transitions.max()
+        
+        # Penalize large transitions (devices can't change power instantly)
+        if max_transition > 0.3:  # More than 30% change per 15-min interval
+            score -= (max_transition - 0.3) * 200
+        
+        # Check for device-specific physics
+        if 'heiz' in device_name.lower() or 'heat' in device_name.lower():
+            # Heating devices should have thermal inertia
+            avg_transition = transitions.mean()
+            if avg_transition > 0.1:  # Too jerky for thermal device
+                score -= (avg_transition - 0.1) * 100
+        
+        elif 'kühl' in device_name.lower() or 'cool' in device_name.lower() or 'air_cond' in device_name.lower():
+            # Cooling devices should cycle reasonably
+            on_periods = self._detect_on_periods(pattern)
+            if len(on_periods) > 0:
+                avg_on_time = np.mean(on_periods)
+                if avg_on_time < 2:  # Less than 30 minutes
+                    score -= 50
+                elif avg_on_time > 20:  # More than 5 hours
+                    score -= 30
+        
+        elif 'light' in device_name.lower() or 'beleucht' in device_name.lower():
+            # Lighting should follow occupancy patterns
+            night_avg = pattern[0:24].mean()  # Midnight to 6 AM
+            day_avg = pattern[36:72].mean()   # 9 AM to 6 PM
+            
+            if night_avg > day_avg * 0.5:  # Night too bright
+                score -= 40
+        
+        # Check for early morning unrealistic peaks (3-4 AM)
+        early_morning = pattern[12:16].mean()  # 3-4 AM
+        morning_peak = pattern[24:32].mean()   # 6-8 AM
+        
+        if early_morning > morning_peak * 0.8:  # Early morning too high
+            score -= 60
+        
+        return max(0, min(100, score))
+    
+    def _detect_on_periods(self, pattern: np.ndarray) -> List[int]:
+        """Detect on periods in a cycling pattern."""
+        
+        threshold = pattern.mean()
+        is_on = pattern > threshold
+        
+        on_periods = []
+        current_period = 0
+        
+        for state in is_on:
+            if state:  # On
+                current_period += 1
+            else:  # Off
+                if current_period > 0:
+                    on_periods.append(current_period)
+                    current_period = 0
+        
+        if current_period > 0:
+            on_periods.append(current_period)
+        
+        return on_periods
+    
+    def _evaluate_pattern_realism(self, pattern: np.ndarray, device_name: str) -> float:
+        """Evaluate the realism of the pattern."""
+        
+        score = 100.0
+        
+        # Pattern should not be too flat
+        pattern_std = pattern.std()
+        if pattern_std < 0.05:  # Too constant
+            score -= 40
+        
+        # Pattern should not be too spiky
+        spikiness = np.sum(np.abs(np.diff(pattern, 2)))  # Second derivative sum
+        if spikiness > 10:
+            score -= 30
+        
+        # Pattern should loop properly
+        start_end_diff = abs(pattern[0] - pattern[-1])
+        if start_end_diff > pattern_std * 0.5:
+            score -= 20
+        
+        # Device-specific realism checks
+        if 'server' in device_name.lower() or 'network' in device_name.lower():
+            # Servers should be relatively constant
+            if pattern_std > 0.3:
+                score -= 30
+        
+        return max(0, min(100, score))
+    
+    def _evaluate_target_contribution(self, device_power_kw: np.ndarray, target_pattern: np.ndarray, device_name: str) -> float:
+        """Evaluate how well device pattern contributes to target matching."""
+        
+        # For now, use correlation as a proxy for good contribution
+        # In a full implementation, this would simulate the total load with this device
+        correlation = np.corrcoef(device_power_kw, target_pattern[:len(device_power_kw)])[0, 1]
+        
+        if np.isnan(correlation):
+            correlation = 0
+        
+        # Convert correlation to 0-100 score
+        score = max(0, correlation * 100)
+        
+        return score
+    
+    def _evaluate_pattern_smoothness(self, pattern: np.ndarray) -> float:
+        """Evaluate pattern smoothness."""
+        
+        # Calculate smoothness based on transitions
+        transitions = np.abs(np.diff(pattern))
+        smoothness = 100 - (transitions.mean() * 500)  # Scale to 0-100
+        
+        return max(0, min(100, smoothness))
+    
+    def _post_process_pattern(self, pattern: List[float], device_name: str) -> List[float]:
+        """Post-process optimized pattern for realism and constraints."""
+        
+        pattern_array = np.array(pattern)
+        
+        # Ensure pattern loops properly
+        self._ensure_pattern_loops(pattern_array)
+        
+        # Apply device-specific constraints
+        if 'light' in device_name.lower():
+            # Lighting should have clear day/night pattern
+            for i in range(96):
+                hour = (i // 4) % 24
+                if 1 <= hour <= 5:  # 1-5 AM should be very low
+                    pattern_array[i] = min(pattern_array[i], 0.1)
+                elif 22 <= hour <= 23:  # 10-11 PM should be decreasing
+                    pattern_array[i] = min(pattern_array[i], 0.3)
+        
+        # Apply smoothing to prevent unrealistic transitions
+        from scipy.ndimage import gaussian_filter1d
+        smoothed_pattern = gaussian_filter1d(pattern_array, sigma=1.0)
+        
+        # Blend original and smoothed (keep some optimization but add realism)
+        final_pattern = 0.7 * smoothed_pattern + 0.3 * pattern_array
+        
+        # Ensure values are in valid range
+        final_pattern = np.clip(final_pattern, 0.0, 1.0)
+        
+        return final_pattern.tolist()
+    
+    def _validate_physics_compliance(self, patterns: Dict) -> Dict:
+        """Validate all patterns against physics constraints."""
+        
+        validation_results = {}
+        total_score = 0
+        
+        for device_name, pattern_data in patterns.items():
+            pattern = np.array(pattern_data['daily_pattern'])
+            physics_score = self._evaluate_physics_constraints(pattern, device_name)
+            
+            validation_results[device_name] = {
+                'physics_score': physics_score,
+                'compliant': physics_score > 70,  # Threshold for compliance
+                'issues': self._identify_physics_issues(pattern, device_name)
+            }
+            
+            total_score += physics_score
+        
+        validation_results['overall_score'] = total_score / len(patterns) if patterns else 0
+        validation_results['overall_compliant'] = validation_results['overall_score'] > 75
+        
+        return validation_results
+    
+    def _identify_physics_issues(self, pattern: np.ndarray, device_name: str) -> List[str]:
+        """Identify specific physics issues with a pattern."""
+        
+        issues = []
+        
+        # Check transitions
+        transitions = np.abs(np.diff(pattern))
+        if transitions.max() > 0.3:
+            issues.append("Large power transitions (>30% per 15min)")
+        
+        # Check early morning peaks
+        early_morning = pattern[12:16].mean()
+        morning = pattern[24:32].mean()
+        if early_morning > morning * 0.8:
+            issues.append("Unrealistic 3-4 AM peak")
+        
+        # Check looping
+        if abs(pattern[0] - pattern[-1]) > pattern.std() * 0.5:
+            issues.append("Pattern doesn't loop properly")
+        
+        return issues
+    
+    def _calculate_learning_confidence(self, patterns: Dict, physics_validation: Dict) -> Dict:
+        """Calculate confidence scores for learned patterns."""
+        
+        confidence_scores = {}
+        
+        for device_name, pattern_data in patterns.items():
+            # Base confidence on optimization success and physics compliance
+            opt_success = pattern_data.get('convergence_success', False)
+            physics_score = physics_validation.get(device_name, {}).get('physics_score', 0)
+            
+            # Calculate confidence
+            confidence = 0
+            if opt_success:
+                confidence += 40
+            confidence += physics_score * 0.6  # Physics score weighted
+            
+            confidence_scores[device_name] = max(0, min(100, confidence))
+        
+        return confidence_scores
+    
+    def _calculate_target_match_score(self, patterns: Dict) -> float:
+        """Calculate how well optimized patterns would match target."""
+        
+        # This is a simplified calculation
+        # In full implementation, would simulate total load and compare
+        
+        total_score = 0
+        for device_name, pattern_data in patterns.items():
+            # Use optimization score as proxy
+            opt_score = pattern_data.get('optimization_score', 0)
+            # Convert to positive score (optimization minimizes)
+            score = max(0, 100 + opt_score * 10)  # Rough conversion
+            total_score += score
+        
+        return total_score / len(patterns) if patterns else 0
+    
+    def _calculate_pattern_realism_score(self, patterns: Dict) -> float:
+        """Calculate overall pattern realism score."""
+        
+        total_score = 0
+        
+        for device_name, pattern_data in patterns.items():
+            pattern = np.array(pattern_data['daily_pattern'])
+            realism_score = self._evaluate_pattern_realism(pattern, device_name)
+            total_score += realism_score
+        
+        return total_score / len(patterns) if patterns else 0
+
+
+class PhysicsRealismEngine:
+    """Physics-based realism engine for comprehensive pattern validation."""
+    
+    def __init__(self):
+        self.constraints = {
+            'max_power_change_rate': 0.25,  # Max 25% per 15-min interval
+            'min_cycling_time': 2,          # Minimum 30 minutes per cycle
+            'thermal_time_constant': 4,     # Thermal devices: 1 hour time constant
+            'early_morning_limit': 0.3      # 3-4 AM should be <30% of daily peak
+        }
+        self.logger = logging.getLogger(__name__)
+    
+    def validate_patterns(self, patterns: Dict, device_configs: Dict = None) -> Dict:
+        """Comprehensive physics validation of device patterns."""
+        
+        validation_results = {
+            'devices': {},
+            'overall_score': 0,
+            'critical_issues': [],
+            'warnings': [],
+            'recommendations': []
+        }
+        
+        total_score = 0
+        device_count = 0
+        
+        for device_name, pattern_data in patterns.items():
+            if isinstance(pattern_data, dict) and 'daily_pattern' in pattern_data:
+                pattern = np.array(pattern_data['daily_pattern'])
+            else:
+                pattern = np.array(pattern_data)
+            
+            device_validation = self._validate_device_pattern(device_name, pattern, device_configs)
+            validation_results['devices'][device_name] = device_validation
+            
+            total_score += device_validation['score']
+            device_count += 1
+            
+            # Collect critical issues
+            if device_validation['score'] < 50:
+                validation_results['critical_issues'].extend(device_validation['issues'])
+            elif device_validation['score'] < 75:
+                validation_results['warnings'].extend(device_validation['issues'])
+        
+        validation_results['overall_score'] = total_score / device_count if device_count > 0 else 0
+        
+        # Generate recommendations
+        validation_results['recommendations'] = self._generate_recommendations(validation_results)
+        
+        self.logger.info(f"Physics validation completed: {validation_results['overall_score']:.1f}/100")
+        return validation_results
+    
+    def _validate_device_pattern(self, device_name: str, pattern: np.ndarray, device_configs: Dict = None) -> Dict:
+        """Validate a single device pattern against physics constraints."""
+        
+        validation = {
+            'score': 100.0,
+            'issues': [],
+            'warnings': [],
+            'physics_compliance': {}
+        }
+        
+        # Power transition validation
+        transitions = np.abs(np.diff(pattern))
+        max_transition = transitions.max()
+        avg_transition = transitions.mean()
+        
+        if max_transition > self.constraints['max_power_change_rate']:
+            validation['score'] -= 30
+            validation['issues'].append(f"Excessive power changes: {max_transition:.2f} > {self.constraints['max_power_change_rate']}")
+        
+        validation['physics_compliance']['power_transitions'] = {
+            'max_change_rate': float(max_transition),
+            'avg_change_rate': float(avg_transition),
+            'compliant': max_transition <= self.constraints['max_power_change_rate']
+        }
+        
+        # Early morning peak validation
+        early_morning_avg = pattern[12:16].mean()  # 3-4 AM
+        daily_peak = pattern.max()
+        early_morning_ratio = early_morning_avg / daily_peak if daily_peak > 0 else 0
+        
+        if early_morning_ratio > self.constraints['early_morning_limit']:
+            validation['score'] -= 40
+            validation['issues'].append(f"Unrealistic 3-4 AM peak: {early_morning_ratio:.2f} > {self.constraints['early_morning_limit']}")
+        
+        validation['physics_compliance']['early_morning'] = {
+            'peak_ratio': float(early_morning_ratio),
+            'compliant': early_morning_ratio <= self.constraints['early_morning_limit']
+        }
+        
+        # Pattern looping validation
+        start_end_diff = abs(pattern[0] - pattern[-1])
+        pattern_std = pattern.std()
+        loops_properly = start_end_diff < pattern_std * 0.3
+        
+        if not loops_properly:
+            validation['score'] -= 25
+            validation['issues'].append(f"Pattern doesn't loop: start/end difference {start_end_diff:.3f}")
+        
+        validation['physics_compliance']['pattern_looping'] = {
+            'start_end_difference': float(start_end_diff),
+            'loops_properly': loops_properly
+        }
+        
+        # Device-specific physics validation
+        device_specific_validation = self._validate_device_specific_physics(device_name, pattern)
+        validation['score'] += device_specific_validation['score_adjustment']
+        validation['issues'].extend(device_specific_validation['issues'])
+        validation['warnings'].extend(device_specific_validation['warnings'])
+        validation['physics_compliance'].update(device_specific_validation['compliance'])
+        
+        # Ensure score is in valid range
+        validation['score'] = max(0, min(100, validation['score']))
+        
+        return validation
+    
+    def _validate_device_specific_physics(self, device_name: str, pattern: np.ndarray) -> Dict:
+        """Validate device-specific physics constraints."""
+        
+        result = {
+            'score_adjustment': 0,
+            'issues': [],
+            'warnings': [],
+            'compliance': {}
+        }
+        
+        device_type = self._classify_device_type(device_name)
+        
+        if device_type == 'thermal':
+            # Thermal devices should have smooth transitions due to thermal inertia
+            smoothness = self._calculate_smoothness(pattern)
+            if smoothness < 0.7:  # Less than 70% smooth
+                result['score_adjustment'] -= 15
+                result['warnings'].append(f"Thermal device not smooth enough: {smoothness:.2f}")
+            
+            result['compliance']['thermal_smoothness'] = {
+                'smoothness_factor': float(smoothness),
+                'compliant': smoothness >= 0.7
+            }
+        
+        elif device_type == 'cyclic':
+            # Cyclic devices (refrigeration, heat pumps) should have reasonable cycles
+            cycle_analysis = self._analyze_cycles(pattern)
+            
+            if cycle_analysis['avg_on_time'] < self.constraints['min_cycling_time']:
+                result['score_adjustment'] -= 20
+                result['issues'].append(f"Cycles too short: {cycle_analysis['avg_on_time']:.1f} < {self.constraints['min_cycling_time']}")
+            
+            result['compliance']['cycling_behavior'] = cycle_analysis
+        
+        elif device_type == 'lighting':
+            # Lighting should follow daylight/occupancy patterns
+            lighting_validation = self._validate_lighting_pattern(pattern)
+            result['score_adjustment'] += lighting_validation['score_adjustment']
+            result['issues'].extend(lighting_validation['issues'])
+            result['compliance']['lighting_behavior'] = lighting_validation['compliance']
+        
+        return result
+    
+    def _classify_device_type(self, device_name: str) -> str:
+        """Classify device type for physics validation."""
+        
+        name_lower = device_name.lower()
+        
+        if any(term in name_lower for term in ['heiz', 'heat', 'wärme', 'kühl', 'cool', 'air_cond', 'hvac']):
+            return 'thermal'
+        elif any(term in name_lower for term in ['refrig', 'kälte', 'pump', 'compressor']):
+            return 'cyclic'
+        elif any(term in name_lower for term in ['light', 'beleucht', 'lamp']):
+            return 'lighting'
+        elif any(term in name_lower for term in ['server', 'computer', 'network']):
+            return 'electronic'
+        else:
+            return 'general'
+    
+    def _calculate_smoothness(self, pattern: np.ndarray) -> float:
+        """Calculate pattern smoothness (0-1, higher is smoother)."""
+        
+        if len(pattern) < 2:
+            return 1.0
+        
+        # Calculate normalized variation
+        transitions = np.abs(np.diff(pattern))
+        max_possible_variation = pattern.max() - pattern.min()
+        
+        if max_possible_variation == 0:
+            return 1.0  # Constant pattern is perfectly smooth
+        
+        normalized_variation = transitions.sum() / (len(transitions) * max_possible_variation)
+        smoothness = max(0, 1 - normalized_variation)
+        
+        return smoothness
+    
+    def _analyze_cycles(self, pattern: np.ndarray) -> Dict:
+        """Analyze cycling behavior of the pattern."""
+        
+        threshold = pattern.mean()
+        is_on = pattern > threshold
+        
+        # Find on and off periods
+        on_periods = []
+        off_periods = []
+        current_on_period = 0
+        current_off_period = 0
+        
+        for state in is_on:
+            if state:  # On
+                if current_off_period > 0:
+                    off_periods.append(current_off_period)
+                    current_off_period = 0
+                current_on_period += 1
+            else:  # Off
+                if current_on_period > 0:
+                    on_periods.append(current_on_period)
+                    current_on_period = 0
+                current_off_period += 1
+        
+        # Handle final period
+        if current_on_period > 0:
+            on_periods.append(current_on_period)
+        if current_off_period > 0:
+            off_periods.append(current_off_period)
+        
+        return {
+            'num_cycles': len(on_periods),
+            'avg_on_time': np.mean(on_periods) if on_periods else 0,
+            'avg_off_time': np.mean(off_periods) if off_periods else 0,
+            'on_periods': on_periods,
+            'off_periods': off_periods,
+            'compliant': (np.mean(on_periods) if on_periods else 0) >= self.constraints['min_cycling_time']
+        }
+    
+    def _validate_lighting_pattern(self, pattern: np.ndarray) -> Dict:
+        """Validate lighting-specific patterns."""
+        
+        result = {
+            'score_adjustment': 0,
+            'issues': [],
+            'compliance': {}
+        }
+        
+        # Check day/night pattern
+        night_avg = pattern[0:24].mean()    # Midnight to 6 AM
+        day_avg = pattern[36:72].mean()     # 9 AM to 6 PM
+        evening_avg = pattern[72:84].mean() # 6 PM to 9 PM
+        
+        # Night should be lowest
+        if night_avg > day_avg * 0.3:
+            result['score_adjustment'] -= 15
+            result['issues'].append(f"Night lighting too high: {night_avg:.2f} vs day {day_avg:.2f}")
+        
+        # Evening should be moderate
+        if evening_avg > day_avg * 0.8:
+            result['score_adjustment'] += 5  # Good evening usage
+        
+        result['compliance'] = {
+            'night_avg': float(night_avg),
+            'day_avg': float(day_avg),
+            'evening_avg': float(evening_avg),
+            'night_day_ratio': float(night_avg / day_avg if day_avg > 0 else 0),
+            'proper_day_night_pattern': night_avg <= day_avg * 0.3
+        }
+        
+        return result
+    
+    def _generate_recommendations(self, validation_results: Dict) -> List[str]:
+        """Generate recommendations based on validation results."""
+        
+        recommendations = []
+        
+        if validation_results['overall_score'] < 60:
+            recommendations.append("Overall physics compliance is poor. Consider complete pattern redesign.")
+        elif validation_results['overall_score'] < 80:
+            recommendations.append("Physics compliance needs improvement. Focus on major issues first.")
+        
+        # Analyze common issues
+        all_issues = validation_results['critical_issues'] + validation_results['warnings']
+        
+        if any('power changes' in issue for issue in all_issues):
+            recommendations.append("Reduce sudden power changes by adding thermal inertia or smoothing.")
+        
+        if any('3-4 AM peak' in issue for issue in all_issues):
+            recommendations.append("Fix unrealistic early morning peaks - most devices should be off 3-4 AM.")
+        
+        if any("doesn't loop" in issue for issue in all_issues):
+            recommendations.append("Ensure daily patterns start and end at similar values for proper 24h cycling.")
+        
+        return recommendations
+
+
+class OccupancyPatternLearner:
+    """Advanced occupancy pattern learning for building usage optimization."""
+    
+    def __init__(self):
+        self.occupancy_data = {}
+        self.logger = logging.getLogger(__name__)
+        self.learned_patterns = {}
+    
+    def learn_occupancy(self, load_data: pd.DataFrame, building_type: str = 'office') -> Dict:
+        """Learn occupancy patterns from load data analysis."""
+        
+        if 'datetime' not in load_data.columns and load_data.index.name != 'datetime':
+            # Try to create datetime from index or first column
+            if hasattr(load_data.index, 'hour'):
+                datetimes = load_data.index
+            else:
+                # Assume first column might be datetime
+                datetimes = pd.to_datetime(load_data.iloc[:, 0])
+        else:
+            datetimes = load_data['datetime'] if 'datetime' in load_data.columns else load_data.index
+        
+        # Extract load data (assume total_power or Value column)
+        if 'total_power' in load_data.columns:
+            load_values = load_data['total_power']
+        elif 'Value' in load_data.columns:
+            load_values = load_data['Value']
+        else:
+            # Use first numeric column
+            numeric_cols = load_data.select_dtypes(include=[np.number]).columns
+            load_values = load_data[numeric_cols[0]]
+        
+        # Learn patterns
+        occupancy_patterns = self._extract_occupancy_patterns(datetimes, load_values, building_type)
+        usage_patterns = self._extract_usage_patterns(datetimes, load_values)
+        seasonal_patterns = self._extract_seasonal_patterns(datetimes, load_values)
+        
+        self.learned_patterns = {
+            'occupancy': occupancy_patterns,
+            'usage': usage_patterns,
+            'seasonal': seasonal_patterns,
+            'building_type': building_type,
+            'confidence': self._calculate_pattern_confidence(datetimes, load_values)
+        }
+        
+        self.logger.info(f"Occupancy learning completed for {building_type} building")
+        return {'occupancy_learned': True, 'patterns': self.learned_patterns}
+    
+    def _extract_occupancy_patterns(self, datetimes: pd.Series, load_values: pd.Series, building_type: str) -> Dict:
+        """Extract occupancy probability patterns by hour and day type."""
+        
+        # Create DataFrame for analysis
+        df = pd.DataFrame({
+            'datetime': pd.to_datetime(datetimes),
+            'load': load_values
+        })
+        
+        df['hour'] = df['datetime'].dt.hour
+        df['weekday'] = df['datetime'].dt.weekday
+        df['is_weekend'] = df['weekday'] >= 5
+        
+        # Normalize load to 0-1 for occupancy probability estimation
+        df['load_normalized'] = (df['load'] - df['load'].min()) / (df['load'].max() - df['load'].min())
+        
+        # Calculate occupancy probability by hour for weekdays and weekends
+        weekday_occupancy = df[~df['is_weekend']].groupby('hour')['load_normalized'].mean()
+        weekend_occupancy = df[df['is_weekend']].groupby('hour')['load_normalized'].mean()
+        
+        # Apply building-type specific adjustments
+        if building_type == 'office':
+            # Office buildings: high occupancy 8-18, low otherwise
+            for hour in range(24):
+                if 8 <= hour <= 18:
+                    weekday_occupancy[hour] = max(weekday_occupancy[hour], 0.7)
+                elif hour <= 6 or hour >= 20:
+                    weekday_occupancy[hour] = min(weekday_occupancy[hour], 0.2)
+                    weekend_occupancy[hour] = min(weekend_occupancy[hour], 0.1)
+        
+        elif building_type == 'residential':
+            # Residential: peaks morning/evening, lower during day
+            for hour in range(24):
+                if hour in [7, 8, 18, 19, 20]:
+                    weekday_occupancy[hour] = max(weekday_occupancy[hour], 0.8)
+                elif 9 <= hour <= 16:
+                    weekday_occupancy[hour] = min(weekday_occupancy[hour], 0.4)
+        
+        return {
+            'weekday_hourly': weekday_occupancy.to_dict(),
+            'weekend_hourly': weekend_occupancy.to_dict(),
+            'building_type': building_type
+        }
+    
+    def _extract_usage_patterns(self, datetimes: pd.Series, load_values: pd.Series) -> Dict:
+        """Extract equipment usage patterns."""
+        
+        df = pd.DataFrame({
+            'datetime': pd.to_datetime(datetimes),
+            'load': load_values
+        })
+        
+        df['hour'] = df['datetime'].dt.hour
+        df['month'] = df['datetime'].dt.month
+        
+        # Identify usage peaks and patterns
+        hourly_avg = df.groupby('hour')['load'].mean()
+        monthly_avg = df.groupby('month')['load'].mean()
+        
+        # Find peak hours
+        peak_hours = hourly_avg.nlargest(3).index.tolist()
+        low_hours = hourly_avg.nsmallest(3).index.tolist()
+        
+        return {
+            'hourly_average': hourly_avg.to_dict(),
+            'monthly_average': monthly_avg.to_dict(),
+            'peak_hours': peak_hours,
+            'low_hours': low_hours,
+            'daily_peak_ratio': float(hourly_avg.max() / hourly_avg.mean()),
+            'seasonal_variation': float(monthly_avg.std() / monthly_avg.mean())
+        }
+    
+    def _extract_seasonal_patterns(self, datetimes: pd.Series, load_values: pd.Series) -> Dict:
+        """Extract seasonal usage patterns."""
+        
+        df = pd.DataFrame({
+            'datetime': pd.to_datetime(datetimes),
+            'load': load_values
+        })
+        
+        df['month'] = df['datetime'].dt.month
+        df['season'] = df['month'].apply(self._month_to_season)
+        
+        seasonal_avg = df.groupby('season')['load'].mean()
+        monthly_avg = df.groupby('month')['load'].mean()
+        
+        return {
+            'seasonal_average': seasonal_avg.to_dict(),
+            'monthly_average': monthly_avg.to_dict(),
+            'heating_season_factor': float(seasonal_avg.get('winter', 0) / seasonal_avg.mean()),
+            'cooling_season_factor': float(seasonal_avg.get('summer', 0) / seasonal_avg.mean())
+        }
+    
+    def _month_to_season(self, month: int) -> str:
+        """Convert month number to season."""
+        if month in [12, 1, 2]:
+            return 'winter'
+        elif month in [3, 4, 5]:
+            return 'spring'
+        elif month in [6, 7, 8]:
+            return 'summer'
+        else:
+            return 'autumn'
+    
+    def _calculate_pattern_confidence(self, datetimes: pd.Series, load_values: pd.Series) -> Dict:
+        """Calculate confidence in learned patterns."""
+        
+        # Calculate confidence based on data completeness and consistency
+        data_completeness = len(load_values.dropna()) / len(load_values)
+        
+        # Calculate consistency (inverse of coefficient of variation by hour)
+        df = pd.DataFrame({
+            'datetime': pd.to_datetime(datetimes),
+            'load': load_values
+        })
+        df['hour'] = df['datetime'].dt.hour
+        
+        hourly_cv = df.groupby('hour')['load'].apply(lambda x: x.std() / x.mean() if x.mean() > 0 else 1)
+        consistency = 1 - hourly_cv.mean()
+        
+        # Time coverage (how many days/weeks of data)
+        time_span = (df['datetime'].max() - df['datetime'].min()).days
+        time_coverage = min(1.0, time_span / 365)  # Ideal: 1 year of data
+        
+        overall_confidence = (data_completeness * 0.4 + consistency * 0.4 + time_coverage * 0.2) * 100
+        
+        return {
+            'overall_confidence': float(max(0, min(100, overall_confidence))),
+            'data_completeness': float(data_completeness * 100),
+            'pattern_consistency': float(consistency * 100),
+            'time_coverage': float(time_coverage * 100)
+        }

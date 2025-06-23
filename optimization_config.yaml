@@ -61,7 +61,7 @@ evaluation:
   # Stage 3 (Gen 41-60): 6 periods (~180k records)
   # Stage 4 (Gen 61-80): 8 periods (~240k records)
   # Stage 5 (Gen 81-100): All 10 periods (~300k records)
-  generations_per_stage: [20, 20, 20, 20, 20]
+  generations_per_stage: [1, 1, 1, 1, 1]
 
 # Alternative: Conservative Approach (fewer but longer periods)
 # evaluation:
@@ -151,6 +151,6 @@ reward_weights:
 optimization:
   algorithm: "genetic"
   population_size: 40          # Increased for better exploration
-  generations: 100
+  generations: 5
   mutation_rate: 0.08          # Slightly reduced for more focused search
   crossover_rate: 0.8

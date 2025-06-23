@@ -40,4 +40,4 @@ config.yaml
 /config_archive/
 .claude/
 devices.json
-
+archived_code/

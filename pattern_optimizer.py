@@ -25,6 +25,7 @@ import copy
 import json
 import yaml
 import os
+import shutil
 try:
     from sklearn.metrics import mean_squared_error, mean_absolute_error
     HAS_SKLEARN = True
@@ -84,6 +85,9 @@ class IntelligentPatternOptimizer:
         # Weather fetcher for generating synthetic data
         db_path = self.config.get('database', {}).get('path', 'energy_weather.db')
         self.weather_fetcher = MultiSourceWeatherFetcher(self.config, db_path)
+        
+        # Pattern smoother for optimization
+        self.pattern_smoother = PatternSmoother()
 
         # Enhanced optimization parameters
         self.scoring_weights = {
@@ -513,81 +517,106 @@ class IntelligentPatternOptimizer:
         }
 
     def load_training_data(self, file_path: str, location: str) -> pd.DataFrame:
-        """Load training data and automatically enhance for realism."""
-        training_config = self.optimization_config.get('training_data', {})
-        timestamp_col = training_config.get('timestamp_column', 'Timestamp')
-        value_col = training_config.get('value_column', 'Value')
-        value_unit = training_config.get('value_unit', 'kW')
-        timezone = training_config.get('timezone', 'UTC')
-        years_to_use = training_config.get('years_to_use', [2018, 2019, 2020, 2023, 2024])
-
+        """Load training data and optimize patterns using new genetic algorithm system."""
         self.logger.info(f"🏠 Loading training data from {file_path}")
 
-        all_data = []
-
         try:
-            xl_file = pd.ExcelFile(file_path)
-            available_sheets = xl_file.sheet_names
-            self.logger.info(f"Available sheets: {available_sheets}")
+            # Load training data - handle simple 2-column format
+            df = pd.read_excel(file_path)
+            self.logger.info(f"📊 Training data shape: {df.shape}")
+            self.logger.info(f"📊 Training data columns: {list(df.columns)}")
+            
+            # Handle different column formats
+            if 'Timestamp' in df.columns and 'Value' in df.columns:
+                df['datetime'] = pd.to_datetime(df['Timestamp'])
+                df['total_power'] = df['Value'] * 1000  # Convert kW to W
+            elif len(df.columns) >= 2:
+                # Use first two columns
+                df['datetime'] = pd.to_datetime(df.iloc[:, 0])
+                df['total_power'] = df.iloc[:, 1] * 1000  # Assume kW, convert to W
+            else:
+                raise ValueError("Invalid training data format")
+            
+            # Clean data
+            df = df[['datetime', 'total_power']].dropna()
+            df = df[df['total_power'] >= 0]
+            df.set_index('datetime', inplace=True)
+            
+            # Resample to 15-minute intervals
+            df = df.resample('15min').mean().interpolate()
+            
+            self.logger.info(f"✅ Successfully loaded {len(df)} records")
+            self.logger.info(f"📅 Date range: {df.index.min()} to {df.index.max()}")
+            self.logger.info(f"⚡ Power range: {df['total_power'].min():.1f}W to {df['total_power'].max():.1f}W")
 
-            for year in years_to_use:
-                sheet_name = str(year)
-                if sheet_name in available_sheets:
-                    self.logger.info(f"Loading data for year {year}")
-
-                    df = pd.read_excel(file_path, sheet_name=sheet_name)
-
-                    if timestamp_col not in df.columns or value_col not in df.columns:
-                        self.logger.error(f"Required columns {timestamp_col}, {value_col} not found in sheet {sheet_name}")
-                        continue
-
-                    df = df[[timestamp_col, value_col]].copy()
-                    df.columns = ['datetime', 'total_power']
-                    df['datetime'] = pd.to_datetime(df['datetime'])
-
-                    # Handle timezone
-                    if timezone.upper() == 'UTC':
-                        if df['datetime'].dt.tz is None:
-                            df['datetime'] = df['datetime'].dt.tz_localize('UTC')
-                        else:
-                            df['datetime'] = df['datetime'].dt.tz_convert('UTC')
-                    else:
-                        if df['datetime'].dt.tz is None:
-                            df['datetime'] = df['datetime'].dt.tz_localize('Europe/Berlin')
-                        else:
-                            df['datetime'] = df['datetime'].dt.tz_convert('Europe/Berlin')
-
-                    # Convert units if necessary
-                    if value_unit.upper() == 'KW':
-                        df['total_power'] = df['total_power'] * 1000
-
-                    df = df.dropna()
-                    df = df[df['total_power'] >= 0]
-                    all_data.append(df)
-                    self.logger.info(f"Loaded {len(df)} records for year {year}")
-
-            if not all_data:
-                raise ValueError("No valid data found in any sheets")
-
-            combined_data = pd.concat(all_data, ignore_index=True)
-            combined_data = combined_data.sort_values('datetime').reset_index(drop=True)
-            combined_data.set_index('datetime', inplace=True)
-            combined_data = combined_data.resample('15min').mean().interpolate()
-
-            self.logger.info(f"✅ Successfully loaded {len(combined_data)} total records")
-            self.logger.info(f"📅 Date range: {combined_data.index.min()} to {combined_data.index.max()}")
-            self.logger.info(f"⚡ Power range: {combined_data['total_power'].min():.1f}W to {combined_data['total_power'].max():.1f}W")
-
-            self.target_data = combined_data
+            self.target_data = df
             self.location = location
 
-            # Store original patterns for comparison (but enhance them immediately)
+            # Use new pattern learning system 
+            device_configs = self.config_manager.get_all_devices()
+            
+            # Create target DataFrame in format expected by pattern learner
+            target_for_learning = pd.DataFrame({'Value': df['total_power'] / 1000})  # Convert back to kW
+            
+            # Get weather data for the training period
+            try:
+                start_date = df.index.min().strftime('%Y-%m-%d')
+                end_date = df.index.max().strftime('%Y-%m-%d')
+                weather_data = self.weather_fetcher.get_weather_data(
+                    location=location, start_date=start_date, end_date=end_date
+                )
+                self.weather_data_cache = weather_data
+                self.logger.info(f"📊 Weather data loaded: {len(weather_data)} records")
+            except Exception as e:
+                self.logger.warning(f"Could not load weather data: {e}")
+                self.weather_data_cache = None
+
+            # Run genetic algorithm pattern optimization
+            self.logger.info("🧬 Starting genetic algorithm pattern optimization...")
+            learning_results = self.pattern_learner.learn_patterns(
+                device_configs, target_for_learning, self.weather_data_cache
+            )
+            
+            if learning_results.get('learned', False):
+                self.logger.info(f"🧠 Pattern optimization completed: {len(learning_results['patterns'])} devices")
+                
+                # Update device configs with optimized patterns
+                optimized_count = 0
+                for device_name, pattern_data in learning_results['patterns'].items():
+                    if device_name in device_configs:
+                        device_configs[device_name]['daily_pattern'] = pattern_data['daily_pattern']
+                        optimized_count += 1
+                        self.logger.info(f"📝 Optimized pattern for {device_name} (score: {pattern_data.get('optimization_score', 'N/A'):.3f})")
+                
+                # Store results
+                self.optimization_state['learned_patterns'] = learning_results['patterns']
+                self.optimization_state['target_statistics'] = learning_results.get('target_statistics', {})
+                self.optimization_state['physics_validation'] = learning_results.get('physics_validation', {})
+                
+                # Calculate overall optimization success
+                overall_physics_score = learning_results.get('physics_validation', {}).get('overall_score', 0)
+                target_match_score = learning_results.get('optimization_summary', {}).get('target_match_score', 0)
+                
+                self.logger.info(f"🎯 Optimization summary:")
+                self.logger.info(f"  Devices optimized: {optimized_count}/{len(device_configs)}")
+                self.logger.info(f"  Physics compliance: {overall_physics_score:.1f}/100")
+                self.logger.info(f"  Target matching: {target_match_score:.1f}/100")
+                
+                if overall_physics_score >= 75 and target_match_score >= 70:
+                    self.logger.info("✅ EXCELLENT: High-quality pattern optimization achieved!")
+                elif overall_physics_score >= 60 and target_match_score >= 50:
+                    self.logger.info("✅ GOOD: Decent pattern optimization achieved")
+                else:
+                    self.logger.warning("⚠️ MODERATE: Pattern optimization needs improvement")
+                
+            else:
+                self.logger.error("❌ Pattern optimization failed")
+                raise ValueError("Pattern optimization failed")
+
+            # Store original patterns for comparison
             self.original_patterns = {}
-            for device_name, device_config in self.config_manager.get_all_devices().items():
-                original_pattern = device_config.get('daily_pattern', [0.5] * 96)
-                # Immediately enhance for realism
-                enhanced_pattern = self.pattern_smoother.smooth_pattern(original_pattern, device_name)
-                self.original_patterns[device_name] = enhanced_pattern
+            for device_name, device_config in device_configs.items():
+                self.original_patterns[device_name] = device_config.get('daily_pattern', [0.5] * 96)
 
             # Auto-adjust device peak powers realistically
             self._adjust_device_peak_powers_realistically()
@@ -595,7 +624,7 @@ class IntelligentPatternOptimizer:
             # Prepare evaluation periods
             self._prepare_evaluation_periods()
 
-            return combined_data
+            return df
 
         except Exception as e:
             self.logger.error(f"Error loading training data: {e}")
@@ -1562,25 +1591,37 @@ class IntelligentPatternOptimizer:
 
         return mutated
 
-    def save_optimized_config(self, output_path: str = "optimized_config.yaml"):
-        """Save optimized realistic patterns to configuration."""
+    def save_optimized_config(self, devices_json_path: str = "devices.json"):
+        """Archive current devices.json and save optimized patterns."""
         if not self.best_patterns:
             self.logger.warning("No optimized realistic patterns to save")
             return
 
-        optimized_config = copy.deepcopy(self.config)
-
+        # Create archive copy with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        archive_path = f"config_archive/devices_{timestamp}.json"
+        os.makedirs("config_archive", exist_ok=True)
+        
+        # Archive current devices.json
+        if os.path.exists(devices_json_path):
+            shutil.copy2(devices_json_path, archive_path)
+            self.logger.info(f"💾 Archived current devices.json to: {archive_path}")
+        
+        # Load current devices configuration
+        current_devices = self.config_manager.get_all_devices()
+        
         # Update device patterns with optimized realistic patterns
         for device_name, pattern in self.best_patterns.items():
-            if device_name in optimized_config['devices']:
-                optimized_config['devices'][device_name]['daily_pattern'] = pattern
-                optimized_config['devices'][device_name]['pattern_enhanced'] = True
-                optimized_config['devices'][device_name]['realistic_optimized'] = True
+            if device_name in current_devices:
+                current_devices[device_name]['daily_pattern'] = pattern
+                current_devices[device_name]['pattern_enhanced'] = True
+                current_devices[device_name]['realistic_optimized'] = True
+                current_devices[device_name]['optimization_date'] = datetime.now().isoformat()
 
-        # Add comprehensive optimization metadata
+        # Add optimization metadata to the devices structure
         avg_realism = np.mean(self.realism_scores) if self.realism_scores else 0
         
-        optimized_config['optimization_metadata'] = {
+        optimization_metadata = {
             'optimization_date': datetime.now().isoformat(),
             'optimizer_version': 'realistic_first_v1.0',
             'best_accuracy_score': float(self.best_score),
@@ -1600,14 +1641,22 @@ class IntelligentPatternOptimizer:
             'generations_run': len(self.best_scores_history),
             'convergence_achieved': avg_realism > 80
         }
+        
+        # Create the complete devices structure with metadata
+        devices_data = {
+            'devices': current_devices,
+            'building': self.config_manager.get_building_config(),
+            'optimization_metadata': optimization_metadata
+        }
 
-        # Save to file
-        with open(output_path, 'w', encoding='utf-8') as file:
-            yaml.dump(optimized_config, file, default_flow_style=False, indent=2)
+        # Save updated devices.json
+        with open(devices_json_path, 'w', encoding='utf-8') as file:
+            json.dump(devices_data, file, indent=2, ensure_ascii=False)
 
-        self.logger.info(f"🎯 Realistic optimized configuration saved to: {output_path}")
+        self.logger.info(f"🎯 Optimized devices configuration saved to: {devices_json_path}")
         self.logger.info(f"📊 Final realism score: {avg_realism:.1f}/100")
-        return output_path
+        self.logger.info(f"💾 Archive saved to: {archive_path}")
+        return devices_json_path
 
     def generate_comparison_plots(self, output_dir: str = "optimization_plots"):
         """Generate enhanced plots comparing realistic vs original patterns."""
