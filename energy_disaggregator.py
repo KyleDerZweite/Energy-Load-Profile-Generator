@@ -76,6 +76,7 @@ class EnergyDisaggregationResult:
     validation_metrics: Dict[str, float]    # MAE, RMSE, R², etc.
     allocation_summary: Dict[str, float]    # Device energy allocations (%)
     temporal_patterns: Dict[str, Any]       # Learned temporal patterns
+    timestamps: Optional[np.ndarray] = None # Timestamps for the energy data
 
 
 class EnergyDisaggregator:
@@ -86,9 +87,8 @@ class EnergyDisaggregator:
     the sum of device profiles matches the total measured consumption.
     """
     
-    def __init__(self, config_manager=None, accelerator=None, logger=None):
+    def __init__(self, config_manager=None, logger=None):
         self.config_manager = config_manager
-        self.accelerator = accelerator
         self.logger = logger or logging.getLogger(__name__)
         
         # Device models and learned parameters
@@ -222,15 +222,24 @@ class EnergyDisaggregator:
         else:
             return 0.5  # Default moderate dependency
     
-    def _determine_priority(self, priority_str: str) -> int:
-        """Convert priority string to numeric value."""
-        priority_map = {
-            'critical': 1,
-            'important': 2,
-            'normal': 3,
-            'optional': 4
-        }
-        return priority_map.get(priority_str.lower(), 3)
+    def _determine_priority(self, priority_value) -> int:
+        """Convert priority string or int to numeric value."""
+        # Handle integer priority values directly
+        if isinstance(priority_value, int):
+            return priority_value
+        
+        # Handle string priority values
+        if isinstance(priority_value, str):
+            priority_map = {
+                'critical': 1,
+                'important': 2,
+                'normal': 3,
+                'optional': 4
+            }
+            return priority_map.get(priority_value.lower(), 3)
+        
+        # Default fallback
+        return 3
     
     def train(self, total_energy_data: pd.DataFrame, weather_data: pd.DataFrame, 
               training_years: List[int]) -> Dict[str, Any]:
@@ -744,6 +753,18 @@ class EnergyDisaggregator:
         for device_name, profile in device_profiles.items():
             allocation_summary[device_name] = float(np.mean(profile) / np.mean(total_energy) * 100)
         
+        # Extract timestamps from time_data
+        timestamps = None
+        if time_data is not None and not time_data.empty:
+            timestamp_cols = ['timestamp', 'Timestamp', 'time', 'Time', 'datetime']
+            for col in timestamp_cols:
+                if col in time_data.columns:
+                    timestamps = time_data[col].values
+                    break
+            if timestamps is None and len(time_data.columns) > 0:
+                # Use first column if no standard timestamp column found
+                timestamps = time_data.iloc[:, 0].values
+        
         result = EnergyDisaggregationResult(
             device_profiles=device_profiles,
             total_predicted=total_predicted,
@@ -751,7 +772,8 @@ class EnergyDisaggregator:
             energy_balance_error=validation_metrics['energy_balance_error'],
             validation_metrics=validation_metrics,
             allocation_summary=allocation_summary,
-            temporal_patterns=self.learned_parameters.get('temporal_patterns', {})
+            temporal_patterns=self.learned_parameters.get('temporal_patterns', {}),
+            timestamps=timestamps
         )
         
         self.logger.info(f"✅ Disaggregation completed. Energy balance error: {result.energy_balance_error:.3f}%")
@@ -966,6 +988,33 @@ class EnergyDisaggregator:
         
         return result.validation_metrics
     
+    def _convert_to_json_serializable(self, obj):
+        """Convert numpy types and other non-serializable objects to JSON serializable types."""
+        import numpy as np
+        import math
+        
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            # Handle NaN and infinity values
+            float_val = float(obj)
+            if math.isnan(float_val) or math.isinf(float_val):
+                return None
+            return float_val
+        elif isinstance(obj, (float, int)):
+            # Handle regular Python float/int that might be NaN
+            if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+                return None
+            return obj
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {key: self._convert_to_json_serializable(value) for key, value in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [self._convert_to_json_serializable(item) for item in obj]
+        else:
+            return obj
+
     def save_model(self, filepath: str) -> None:
         """Save trained model to file."""
         import json
@@ -974,18 +1023,18 @@ class EnergyDisaggregator:
             'device_models': {name: {
                 'name': model.name,
                 'allocation_method': model.allocation_method.value,
-                'base_allocation_pct': model.base_allocation_pct,
-                'temp_sensitivity': model.temp_sensitivity,
-                'temp_threshold': model.temp_threshold,
+                'base_allocation_pct': self._convert_to_json_serializable(model.base_allocation_pct),
+                'temp_sensitivity': self._convert_to_json_serializable(model.temp_sensitivity),
+                'temp_threshold': self._convert_to_json_serializable(model.temp_threshold),
                 'time_pattern': model.time_pattern,
-                'seasonal_variation': model.seasonal_variation,
-                'occupancy_dependency': model.occupancy_dependency,
-                'priority': model.priority
+                'seasonal_variation': self._convert_to_json_serializable(model.seasonal_variation),
+                'occupancy_dependency': self._convert_to_json_serializable(model.occupancy_dependency),
+                'priority': self._convert_to_json_serializable(model.priority)
             } for name, model in self.device_models.items()},
-            'learned_parameters': self.learned_parameters,
-            'training_years': self.training_years,
+            'learned_parameters': self._convert_to_json_serializable(self.learned_parameters),
+            'training_years': self._convert_to_json_serializable(self.training_years),
             'is_trained': self.is_trained,
-            'validation_metrics': self.validation_metrics
+            'validation_metrics': self._convert_to_json_serializable(self.validation_metrics)
         }
         
         with open(filepath, 'w') as f:

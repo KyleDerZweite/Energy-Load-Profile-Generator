@@ -180,18 +180,9 @@ def train_model(args, config: Dict, logger: logging.Logger) -> BuildingEnergyMod
     building_profile = create_building_profile(building_info)
     
     # Initialize building energy model
-    try:
-        from unified_accelerator import UnifiedAccelerator
-        accelerator = UnifiedAccelerator(prefer_gpu=True, cpu_workers=15)
-        logger.info("🚀 GPU acceleration enabled")
-    except ImportError:
-        accelerator = None
-        logger.info("💻 Using CPU-only mode")
-    
     building_model = BuildingEnergyModel(
         building_profile=building_profile,
         config_manager=config_manager,
-        accelerator=accelerator,
         logger=logger
     )
     
@@ -240,8 +231,8 @@ def train_model(args, config: Dict, logger: logging.Logger) -> BuildingEnergyMod
 
 
 def generate_profiles(args, config: Dict, logger: logging.Logger) -> Dict[str, Any]:
-    """Generate device energy profiles for specified period."""
-    logger.info("⚡ Starting energy profile generation")
+    """Generate comprehensive device energy profiles with visualizations for specified period."""
+    logger.info("⚡ Starting enhanced energy profile generation")
     
     # Load trained model
     model_path = getattr(args, 'model_path', 'trained_model.json')
@@ -251,15 +242,8 @@ def generate_profiles(args, config: Dict, logger: logging.Logger) -> Dict[str, A
     # Initialize building model
     config_manager = ConfigManager(args.config)
     
-    try:
-        from unified_accelerator import UnifiedAccelerator
-        accelerator = UnifiedAccelerator(prefer_gpu=True, cpu_workers=15)
-    except ImportError:
-        accelerator = None
-    
     building_model = BuildingEnergyModel(
         config_manager=config_manager,
-        accelerator=accelerator,
         logger=logger
     )
     
@@ -276,6 +260,10 @@ def generate_profiles(args, config: Dict, logger: logging.Logger) -> Dict[str, A
     # Get weather data for generation period
     weather_fetcher = MultiSourceWeatherFetcher(config.get('weather', {}))
     weather_data = weather_fetcher.get_weather_data(args.location, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
+    
+    # Determine energy data source
+    total_energy_data = None
+    time_data = None
     
     # Check if we have actual energy data for validation
     if hasattr(args, 'validation_data') and args.validation_data:
@@ -296,19 +284,15 @@ def generate_profiles(args, config: Dict, logger: logging.Logger) -> Dict[str, A
                 validation_energy = validation_data
             
             if validation_energy is not None:
-                # Disaggregate the validation energy
-                logger.info("🔬 Disaggregating energy with validation data")
-                result = building_model.disaggregate_energy(
-                    validation_energy, weather_data
-                )
+                logger.info("🔬 Using actual energy data for generation")
+                total_energy_data = validation_energy
             else:
-                logger.warning("⚠️ No validation data found for generation year")
-                result = None
+                logger.warning("⚠️ No validation data found for generation year, using synthetic data")
         else:
-            logger.warning(f"⚠️ Validation data file not found: {args.validation_data}")
-            result = None
-    else:
-        # Generate synthetic total energy using forecast
+            logger.warning(f"⚠️ Validation data file not found: {args.validation_data}, using synthetic data")
+    
+    # Generate synthetic data if no actual data available
+    if total_energy_data is None:
         logger.info("🔮 Generating synthetic energy profiles using forecast")
         
         forecast_config = ForecastConfig(
@@ -335,59 +319,45 @@ def generate_profiles(args, config: Dict, logger: logging.Logger) -> Dict[str, A
         time_data = time_data[:min_length]
         weather_data = weather_data[:min_length]
         
-        result = building_model.disaggregate_energy(total_energy, weather_data, time_data)
+        total_energy_data = total_energy
     
-    if result is None:
+    # Generate comprehensive profiles with visualizations
+    generation_result = building_model.generate_energy_profiles(
+        total_energy=total_energy_data,
+        weather_data=weather_data,
+        location=args.location,
+        start_date=start_date.strftime('%Y-%m-%d'),
+        end_date=end_date.strftime('%Y-%m-%d'),
+        time_data=time_data,
+        create_visualizations=True,
+        export_data=True
+    )
+    
+    if generation_result is None:
         raise RuntimeError("Failed to generate energy profiles")
     
-    logger.info(f"✅ Profile generation completed with {result.energy_balance_error:.3f}% energy balance error")
+    result = generation_result['disaggregation_result']
+    logger.info(f"✅ Profile generation completed with {result.energy_balance_error:.6f}% energy balance error")
     
-    # Export results
-    output_dir = getattr(args, 'output_dir', 'output')
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+    # Log comprehensive results summary
+    logger.info("📋 Generation Results Summary:")
+    logger.info(f"   📍 Location: {generation_result['location']}")
+    logger.info(f"   📅 Period: {generation_result['start_date']} to {generation_result['end_date']}")
+    logger.info(f"   🔧 Device Count: {len(result.device_profiles)}")
+    logger.info(f"   ⚡ Energy Balance Error: {result.energy_balance_error:.6f}%")
     
-    # Create timestamp for unique filenames
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    location_str = args.location.replace(' ', '_').replace(',', '').lower()
+    if 'output_directory' in generation_result:
+        logger.info(f"   📁 Output Directory: {generation_result['output_directory']}")
+        logger.info(f"   📊 Visualizations: {'✅ Created' if generation_result.get('visualizations_created', False) else '❌ Not created'}")
+        logger.info(f"   📋 Data Export: {'✅ Completed' if generation_result.get('data_exported', False) or generation_result.get('visualizations_created', False) else '❌ Failed'}")
     
-    # Export device profiles
-    export_data = {
-        'timestamp': pd.date_range(start=start_date, periods=len(result.total_predicted), freq='15min'),
-        'total_actual': result.total_actual,
-        'total_predicted': result.total_predicted,
-        **result.device_profiles
-    }
+    # Add device allocation summary to logs
+    logger.info("🔧 Device Allocation Summary (Top 10):")
+    top_devices = sorted(result.allocation_summary.items(), key=lambda x: x[1], reverse=True)[:10]
+    for device, allocation in top_devices:
+        logger.info(f"   - {device.replace('_', ' ').title()}: {allocation:.2f}%")
     
-    export_df = pd.DataFrame(export_data)
-    
-    output_filename = f"energy_profiles_{location_str}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}_{timestamp}.xlsx"
-    output_path = os.path.join(output_dir, output_filename)
-    
-    with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
-        export_df.to_excel(writer, sheet_name='Device_Profiles', index=False)
-        
-        # Add summary sheet
-        summary_data = {
-            'Device': list(result.allocation_summary.keys()),
-            'Allocation_Percentage': list(result.allocation_summary.values()),
-            'Average_Energy_kW': [np.mean(result.device_profiles[device]) for device in result.allocation_summary.keys()]
-        }
-        summary_df = pd.DataFrame(summary_data)
-        summary_df.to_excel(writer, sheet_name='Summary', index=False)
-        
-        # Add validation metrics
-        metrics_data = pd.DataFrame([result.validation_metrics]).T
-        metrics_data.columns = ['Value']
-        metrics_data.to_excel(writer, sheet_name='Metrics')
-    
-    logger.info(f"📁 Energy profiles exported to {output_path}")
-    
-    return {
-        'result': result,
-        'output_path': output_path,
-        'export_data': export_data
-    }
+    return generation_result
 
 
 def forecast_energy(args, config: Dict, logger: logging.Logger) -> Dict[str, Any]:
@@ -402,15 +372,8 @@ def forecast_energy(args, config: Dict, logger: logging.Logger) -> Dict[str, Any
     # Initialize components
     config_manager = ConfigManager(args.config)
     
-    try:
-        from unified_accelerator import UnifiedAccelerator
-        accelerator = UnifiedAccelerator(prefer_gpu=True, cpu_workers=15)
-    except ImportError:
-        accelerator = None
-    
     building_model = BuildingEnergyModel(
         config_manager=config_manager,
-        accelerator=accelerator,
         logger=logger
     )
     
@@ -572,7 +535,7 @@ def main():
             
         elif args.command == 'generate':
             result = generate_profiles(args, config, logger)
-            logger.info(f"✅ Profile generation completed: {result['output_path']}")
+            logger.info(f"✅ Profile generation completed: {result.get('output_directory', 'No output directory created')}")
             
         elif args.command == 'forecast':
             result = forecast_energy(args, config, logger)

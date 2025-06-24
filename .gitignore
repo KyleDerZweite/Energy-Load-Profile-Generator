@@ -37,8 +37,7 @@ config.yaml
 # Output
 /output/
 /optimization_plots/
-/config_archive/
+*archive*
 .claude/
 devices.json
-archived_code/
 trained_model*.json

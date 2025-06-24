@@ -202,8 +202,31 @@ result = validator.validate_disaggregation_result(disaggregation_result)
 - GPU acceleration working with AMD Radeon RX 7700S
 - Cross-validation and temporal splitting validated
 - Energy balance validator ensuring constraint compliance
+- **JSON serialization issue FIXED** in building_model.py:620 and energy_disaggregator.py:969
 
 The system successfully disaggregates University Building energy data in Bottrop, Germany with perfect energy balance and is ready for production use.
+
+## Known Limitations & Real-World Compliance Issues
+
+### **Critical Real-World Limitations Identified**
+1. **Fixed Device Peak Powers**: devices.json contains fixed peak_power values (e.g., chiller: 80kW) that don't adapt to actual building consumption
+2. **No Dynamic Device Sizing**: System doesn't scale device capacities based on building size or actual energy data
+3. **Percentage-Only Allocation**: Uses only fixed percentage allocations (HVAC: 30%, lighting: 10%) regardless of building characteristics
+4. **Missing Physical Constraints**: No validation that device profiles respect peak_power limits
+5. **No Capacity Adaptation**: If building peak changes from 250kW to 500kW, devices keep same fixed capacities
+
+### **Example Issue**
+- Building actual peak: 253.8 kW
+- Configured device peaks: 249.1 kW total
+- Current match is coincidental, not adaptive
+- System would fail with different building sizes
+
+### **Next Development Priority**
+Implement adaptive device sizing that:
+- Scales device peak_power based on actual building consumption
+- Validates device profiles against physical constraints
+- Adapts allocation percentages based on building characteristics
+- Ensures realistic device capacity matching
 
 ## Legacy Code Archive
 

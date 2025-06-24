@@ -35,14 +35,13 @@ class EnergyBalanceDeviceCalculator:
     ensuring device profiles sum to total building energy consumption.
     """
     
-    def __init__(self, device_configs: Dict, config_manager=None, accelerator=None):
+    def __init__(self, device_configs: Dict, config_manager=None):
         self.device_configs = device_configs
         self.config_manager = config_manager
-        self.accelerator = accelerator
         self.logger = logging.getLogger(__name__)
         
         # Initialize energy disaggregator for device calculations
-        self.disaggregator = EnergyDisaggregator(config_manager, accelerator, self.logger)
+        self.disaggregator = EnergyDisaggregator(config_manager, self.logger)
         self.disaggregator.initialize_device_models(device_configs)
         
         # Device allocation cache

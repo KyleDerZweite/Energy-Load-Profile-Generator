@@ -28,6 +28,8 @@ import copy
 import warnings
 warnings.filterwarnings('ignore')
 
+from visualization_engine import EnergyVisualizationEngine, VisualizationConfig
+
 # Import our energy disaggregation components
 from energy_disaggregator import EnergyDisaggregator, EnergyDisaggregationResult
 from weather_energy_analyzer import WeatherEnergyAnalyzer, WeatherEnergyAnalysisResult
@@ -83,14 +85,13 @@ class BuildingEnergyModel:
     """
     
     def __init__(self, building_profile: Optional[BuildingProfile] = None,
-                 config_manager=None, accelerator=None, logger=None):
+                 config_manager=None, logger=None):
         self.building_profile = building_profile
         self.config_manager = config_manager
-        self.accelerator = accelerator
         self.logger = logger or logging.getLogger(__name__)
         
         # Initialize core components
-        self.energy_disaggregator = EnergyDisaggregator(config_manager, accelerator, logger)
+        self.energy_disaggregator = EnergyDisaggregator(config_manager, logger)
         self.weather_analyzer = WeatherEnergyAnalyzer(logger)
         
         # Model state
@@ -235,6 +236,146 @@ class BuildingEnergyModel:
         self.logger.info(f"✅ Disaggregation completed with {result.energy_balance_error:.3f}% energy balance error")
         return result
     
+    def generate_energy_profiles(self, total_energy: Union[pd.DataFrame, np.ndarray],
+                               weather_data: pd.DataFrame,
+                               location: str,
+                               start_date: str = None,
+                               end_date: str = None,
+                               time_data: Optional[pd.DataFrame] = None,
+                               create_visualizations: bool = True,
+                               export_data: bool = True,
+                               visualization_config: Optional[VisualizationConfig] = None) -> Dict[str, Any]:
+        """
+        Generate comprehensive energy profiles with visualizations and data export.
+        
+        This method combines disaggregation with advanced visualization and data export
+        capabilities, creating a complete analysis suite.
+        
+        Args:
+            total_energy: Total energy consumption data
+            weather_data: Weather data for the same period
+            location: Location string for naming outputs
+            start_date: Start date string (auto-detected if not provided)
+            end_date: End date string (auto-detected if not provided)
+            time_data: Time data (optional)
+            create_visualizations: Whether to create visualization suite
+            export_data: Whether to export data to Excel
+            visualization_config: Custom visualization configuration
+            
+        Returns:
+            Dict containing disaggregation results and output paths
+        """
+        if not self.is_trained:
+            raise ValueError("Model must be trained before generating profiles")
+        
+        self.logger.info(f"🚀 Generating energy profiles for {location}")
+        
+        # Perform energy disaggregation
+        result = self.disaggregate_energy(total_energy, weather_data, time_data)
+        
+        # Auto-detect dates if not provided
+        if hasattr(result, 'timestamps') and len(result.timestamps) > 0:
+            timestamps = pd.to_datetime(result.timestamps)
+            if start_date is None:
+                start_date = timestamps.min().strftime('%Y-%m-%d')
+            if end_date is None:
+                end_date = timestamps.max().strftime('%Y-%m-%d')
+        else:
+            if start_date is None:
+                start_date = '2024-01-01'
+            if end_date is None:
+                end_date = '2024-12-31'
+        
+        output_info = {
+            'disaggregation_result': result,
+            'location': location,
+            'start_date': start_date,
+            'end_date': end_date,
+            'generation_timestamp': datetime.now().isoformat()
+        }
+        
+        # Create visualizations if requested
+        if create_visualizations:
+            self.logger.info("📊 Creating comprehensive visualization suite...")
+            
+            # Use provided config or create default
+            if visualization_config is None:
+                visualization_config = VisualizationConfig(
+                    excel_format=export_data,
+                    create_summary_report=True
+                )
+            
+            # Initialize visualization engine
+            viz_engine = EnergyVisualizationEngine(visualization_config)
+            
+            # Load devices configuration for enhanced visualizations
+            devices_config = None
+            try:
+                import json
+                with open('devices.json', 'r') as f:
+                    devices_config = json.load(f)
+            except Exception as e:
+                self.logger.warning(f"Could not load devices.json: {e}")
+            
+            # Create comprehensive visualization suite
+            output_dir = viz_engine.visualize_disaggregation_results(
+                result=result,
+                location=location,
+                start_date=start_date,
+                end_date=end_date,
+                weather_data=weather_data,
+                devices_config=devices_config
+            )
+            
+            output_info['output_directory'] = output_dir
+            output_info['visualizations_created'] = True
+            
+            self.logger.info(f"✅ Visualization suite completed: {output_dir}")
+        
+        # Export basic data if visualizations not created but export requested
+        elif export_data:
+            self.logger.info("📋 Exporting energy profile data...")
+            output_dir = self._export_basic_data(result, location, start_date, end_date)
+            output_info['output_directory'] = output_dir
+            output_info['data_exported'] = True
+        
+        # Log summary
+        self.logger.info(f"📋 Generation Summary:")
+        self.logger.info(f"   📍 Location: {location}")
+        self.logger.info(f"   📅 Period: {start_date} to {end_date}")
+        self.logger.info(f"   ⚡ Energy Balance Error: {result.energy_balance_error:.6f}%")
+        self.logger.info(f"   🔧 Device Count: {len(result.device_profiles)}")
+        if 'output_directory' in output_info:
+            self.logger.info(f"   📁 Output Directory: {output_info['output_directory']}")
+        
+        return output_info
+    
+    def _export_basic_data(self, result: EnergyDisaggregationResult, 
+                          location: str, start_date: str, end_date: str) -> str:
+        """Export basic energy profile data without full visualization suite."""
+        from pathlib import Path
+        import pandas as pd
+        
+        # Create output directory
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dir_name = f"energy_profiles_{location.lower().replace(' ', '_').replace(',', '')}_{start_date}_{end_date}_{timestamp}"
+        output_dir = Path("output") / dir_name
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create DataFrame
+        df = pd.DataFrame(result.device_profiles)
+        df['timestamp'] = pd.to_datetime(result.timestamps)
+        df['total_actual'] = result.total_actual
+        df['total_predicted'] = result.total_predicted
+        df.set_index('timestamp', inplace=True)
+        
+        # Export to Excel
+        excel_path = output_dir / "energy_load_profiles.xlsx"
+        df.to_excel(excel_path, index=True)
+        
+        self.logger.info(f"📊 Basic data export completed: {excel_path}")
+        return str(output_dir)
+    
     def forecast_energy(self, forecast_weather: pd.DataFrame,
                        forecast_config: ForecastConfig) -> Dict[str, Any]:
         """
@@ -344,7 +485,7 @@ class BuildingEnergyModel:
             
             # Create temporary disaggregator for this fold
             temp_disaggregator = EnergyDisaggregator(
-                self.config_manager, self.accelerator, self.logger
+                self.config_manager, self.logger
             )
             temp_disaggregator.device_models = self.energy_disaggregator.device_models.copy()
             
@@ -617,6 +758,33 @@ class BuildingEnergyModel:
         if self.validation_results and 'energy_balance_error' in self.validation_results:
             self.logger.info(f"   ✅ Validation energy balance error: {self.validation_results['energy_balance_error']:.3f}%")
     
+    def _convert_to_json_serializable(self, obj):
+        """Convert numpy types and other non-serializable objects to JSON serializable types."""
+        import numpy as np
+        import math
+        
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            # Handle NaN and infinity values
+            float_val = float(obj)
+            if math.isnan(float_val) or math.isinf(float_val):
+                return None
+            return float_val
+        elif isinstance(obj, (float, int)):
+            # Handle regular Python float/int that might be NaN
+            if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+                return None
+            return obj
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {key: self._convert_to_json_serializable(value) for key, value in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [self._convert_to_json_serializable(item) for item in obj]
+        else:
+            return obj
+
     def save_model(self, filepath: str) -> None:
         """Save complete trained model to file."""
         if not self.is_trained:
@@ -627,12 +795,12 @@ class BuildingEnergyModel:
         
         # Prepare model data
         model_data = {
-            'model_metadata': self.model_metadata,
-            'building_profile': asdict(self.building_profile) if self.building_profile else None,
-            'training_config': asdict(self.training_config) if self.training_config else None,
-            'training_metrics': self.training_metrics,
-            'validation_metrics': self.validation_metrics,
-            'validation_results': self.validation_results,
+            'model_metadata': self._convert_to_json_serializable(self.model_metadata),
+            'building_profile': self._convert_to_json_serializable(asdict(self.building_profile)) if self.building_profile else None,
+            'training_config': self._convert_to_json_serializable(asdict(self.training_config)) if self.training_config else None,
+            'training_metrics': self._convert_to_json_serializable(self.training_metrics),
+            'validation_metrics': self._convert_to_json_serializable(self.validation_metrics),
+            'validation_results': self._convert_to_json_serializable(self.validation_results),
             'is_trained': self.is_trained
         }
         
@@ -645,23 +813,23 @@ class BuildingEnergyModel:
         if self.weather_analysis:
             # Convert weather analysis to dict for JSON serialization
             weather_dict = {
-                'heating_signature': asdict(self.weather_analysis.heating_signature) if self.weather_analysis.heating_signature else None,
-                'cooling_signature': asdict(self.weather_analysis.cooling_signature) if self.weather_analysis.cooling_signature else None,
-                'baseload_signature': asdict(self.weather_analysis.baseload_signature),
-                'weather_independent_load': self.weather_analysis.weather_independent_load,
-                'seasonal_patterns': self.weather_analysis.seasonal_patterns,
-                'temperature_statistics': self.weather_analysis.temperature_statistics,
-                'energy_statistics': self.weather_analysis.energy_statistics,
-                'correlation_analysis': self.weather_analysis.correlation_analysis,
-                'degree_day_analysis': self.weather_analysis.degree_day_analysis
+                'heating_signature': self._convert_to_json_serializable(asdict(self.weather_analysis.heating_signature)) if self.weather_analysis.heating_signature else None,
+                'cooling_signature': self._convert_to_json_serializable(asdict(self.weather_analysis.cooling_signature)) if self.weather_analysis.cooling_signature else None,
+                'baseload_signature': self._convert_to_json_serializable(asdict(self.weather_analysis.baseload_signature)),
+                'weather_independent_load': self._convert_to_json_serializable(self.weather_analysis.weather_independent_load),
+                'seasonal_patterns': self._convert_to_json_serializable(self.weather_analysis.seasonal_patterns),
+                'temperature_statistics': self._convert_to_json_serializable(self.weather_analysis.temperature_statistics),
+                'energy_statistics': self._convert_to_json_serializable(self.weather_analysis.energy_statistics),
+                'correlation_analysis': self._convert_to_json_serializable(self.weather_analysis.correlation_analysis),
+                'degree_day_analysis': self._convert_to_json_serializable(self.weather_analysis.degree_day_analysis)
             }
             
             with open(weather_analysis_path, 'w') as f:
-                json.dump(weather_dict, f, indent=2, default=str)
+                json.dump(weather_dict, f, indent=2)
         
         # Save main model data
         with open(filepath, 'w') as f:
-            json.dump(model_data, f, indent=2, default=str)
+            json.dump(model_data, f, indent=2)
         
         self.logger.info(f"💾 Complete model saved to {filepath}")
     
