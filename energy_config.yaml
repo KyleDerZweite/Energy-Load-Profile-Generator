@@ -1,0 +1,275 @@
+# Energy Load Profile Generator - Energy Balance Configuration
+# ==========================================================
+#
+# Configuration for the energy disaggregation and forecasting system.
+# This file defines energy balance parameters, device energy models,
+# and forecasting settings.
+
+# Building Configuration
+building:
+  type: "generic"  # generic, office, university, residential, industrial
+  energy_balance_tolerance: 1.0  # Maximum acceptable energy balance error (%)
+  min_device_allocation: 0.001   # Minimum 0.1% allocation per device
+  max_device_allocation: 0.5     # Maximum 50% allocation per device
+
+# Weather-Energy Analysis
+weather_analysis:
+  heating_base_temp: 15.0  # °C, base temperature for heating degree days
+  cooling_base_temp: 22.0  # °C, base temperature for cooling degree days
+  min_correlation_threshold: 0.3  # Minimum correlation to consider significant
+  min_data_points: 100     # Minimum data points for reliable analysis
+
+# Device Energy Models
+device_models:
+  # HVAC Systems - Temperature Dependent
+  hvac_heating:
+    allocation_method: "degree_days"
+    temp_threshold: 15.0
+    base_allocation_pct: 0.15  # 15% of total energy
+    temp_sensitivity: 0.001    # kW/°C change
+    seasonal_variation: true
+    occupancy_dependency: 0.6  # 60% dependent on occupancy
+    
+  hvac_cooling:
+    allocation_method: "degree_days"
+    temp_threshold: 22.0
+    base_allocation_pct: 0.12  # 12% of total energy
+    temp_sensitivity: 0.001    # kW/°C change
+    seasonal_variation: true
+    occupancy_dependency: 0.7  # 70% dependent on occupancy
+    
+  ventilation:
+    allocation_method: "degree_days"
+    temp_threshold: 20.0
+    base_allocation_pct: 0.08  # 8% of total energy
+    temp_sensitivity: 0.0005   # kW/°C change
+    seasonal_variation: true
+    occupancy_dependency: 0.8  # 80% dependent on occupancy
+
+  # Lighting Systems - Time Pattern Based
+  lighting:
+    allocation_method: "time_pattern"
+    base_allocation_pct: 0.10  # 10% of total energy
+    temp_sensitivity: 0.0      # No temperature dependence
+    seasonal_variation: true   # Varies with daylight hours
+    occupancy_dependency: 0.9  # 90% dependent on occupancy
+    time_pattern: "business_hours"
+
+  # Equipment - Schedule Based
+  office_equipment:
+    allocation_method: "schedule_based"
+    base_allocation_pct: 0.15  # 15% of total energy
+    temp_sensitivity: 0.0002   # Small temperature modulation
+    seasonal_variation: false
+    occupancy_dependency: 0.8  # 80% dependent on occupancy
+    
+  lab_equipment:
+    allocation_method: "schedule_based"
+    base_allocation_pct: 0.12  # 12% of total energy
+    temp_sensitivity: 0.0001   # Small temperature modulation
+    seasonal_variation: false
+    occupancy_dependency: 0.6  # 60% dependent on occupancy
+
+  # Infrastructure - Constant Load
+  servers_it:
+    allocation_method: "constant"
+    base_allocation_pct: 0.08  # 8% of total energy
+    temp_sensitivity: 0.0001   # Slight cooling requirement increase
+    seasonal_variation: false
+    occupancy_dependency: 0.2  # 20% dependent on occupancy
+    
+  security_systems:
+    allocation_method: "constant"
+    base_allocation_pct: 0.02  # 2% of total energy
+    temp_sensitivity: 0.0      # No temperature dependence
+    seasonal_variation: false
+    occupancy_dependency: 0.1  # 10% dependent on occupancy
+
+  # Appliances - Mixed Patterns
+  kitchen_equipment:
+    allocation_method: "schedule_based"
+    base_allocation_pct: 0.06  # 6% of total energy
+    temp_sensitivity: 0.0      # No temperature dependence
+    seasonal_variation: false
+    occupancy_dependency: 0.9  # 90% dependent on occupancy
+    
+  elevators:
+    allocation_method: "schedule_based"
+    base_allocation_pct: 0.03  # 3% of total energy
+    temp_sensitivity: 0.0      # No temperature dependence
+    seasonal_variation: false
+    occupancy_dependency: 0.8  # 80% dependent on occupancy
+
+  # Water Systems
+  water_heating:
+    allocation_method: "schedule_based"
+    base_allocation_pct: 0.09  # 9% of total energy
+    temp_sensitivity: 0.0003   # Some temperature dependence
+    seasonal_variation: true
+    occupancy_dependency: 0.7  # 70% dependent on occupancy
+
+# Predefined Time Patterns
+time_patterns:
+  business_hours:
+    # 96 15-minute intervals for 24 hours
+    # Higher values during business hours (8 AM - 6 PM)
+    pattern: [
+      0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1,  # 00:00-04:00
+      0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.2, 0.2, 0.3, 0.3, 0.4, 0.5, 0.6, 0.7,  # 04:00-08:00
+      0.8, 0.9, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,  # 08:00-12:00
+      1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.9, 0.8, 0.7, 0.6,  # 12:00-16:00
+      0.5, 0.4, 0.3, 0.3, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.1, 0.1, 0.1, 0.1,  # 16:00-20:00
+      0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1   # 20:00-24:00
+    ]
+    
+  continuous:
+    # Constant load pattern
+    pattern: [0.8] * 96  # 80% load continuously
+    
+  kitchen_pattern:
+    # Peak usage during meal times
+    pattern: [
+      0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1,  # 00:00-04:00
+      0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.6, 0.4,  # 04:00-08:00 (breakfast)
+      0.3, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 0.8, 0.6,  # 08:00-12:00 (lunch prep)
+      0.4, 0.3, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.6, 0.4,  # 12:00-16:00
+      0.3, 0.2, 0.4, 0.6, 0.8, 1.0, 0.8, 0.6, 0.4, 0.3, 0.2, 0.2, 0.1, 0.1, 0.1, 0.1,  # 16:00-20:00 (dinner)
+      0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1   # 20:00-24:00
+    ]
+
+# Training Configuration
+training:
+  energy_balance_tolerance: 1.0  # % acceptable error
+  min_correlation_threshold: 0.3
+  cross_validation_folds: 3
+  feature_engineering: true
+  device_learning_method: "signature_based"  # signature_based, pattern_based, hybrid
+  
+  # Validation settings
+  validation:
+    train_test_split: 0.8  # 80% training, 20% validation
+    temporal_split: true   # Use temporal splitting (not random)
+    min_validation_points: 1000
+
+# Forecasting Configuration
+forecasting:
+  # Default forecast scenarios
+  scenarios:
+    baseline:
+      description: "Normal weather conditions"
+      temperature_adjustment: 0.0
+      seasonal_adjustment: 1.0
+      uncertainty_factor: 1.0
+      
+    warm_climate:
+      description: "Climate warming scenario (+2°C)"
+      temperature_adjustment: 2.0
+      seasonal_adjustment: 1.0
+      uncertainty_factor: 1.2
+      
+    cold_climate:
+      description: "Unusually cold conditions (-2°C)"
+      temperature_adjustment: -2.0
+      seasonal_adjustment: 1.0
+      uncertainty_factor: 1.2
+      
+    extreme_heat:
+      description: "Extreme heat wave conditions (+5°C)"
+      temperature_adjustment: 5.0
+      seasonal_adjustment: 1.1
+      uncertainty_factor: 1.5
+  
+  # Uncertainty estimation
+  uncertainty:
+    enable_uncertainty_estimation: true
+    confidence_intervals: [68, 95]  # Confidence levels to calculate
+    uncertainty_method: "validation_based"  # validation_based, monte_carlo
+    
+  # Weather scenario generation
+  weather_scenarios:
+    use_historical_patterns: true
+    daily_temperature_variation: 3.0  # °C
+    seasonal_adjustment_enabled: true
+    add_random_noise: true
+    noise_std_fraction: 0.3  # 30% of historical variability
+
+# Performance and Acceleration
+performance:
+  enable_gpu_acceleration: true
+  cpu_workers: "auto"  # auto-detect or specify number
+  gpu_memory_fraction: 0.8
+  batch_processing: true
+  parallel_device_calculation: true
+  
+  # Memory management
+  max_memory_usage_gb: 8
+  chunk_size: 10000  # Process data in chunks
+  
+# Output and Export
+output:
+  default_format: "xlsx"  # xlsx, csv, json
+  include_plots: true
+  include_validation_metrics: true
+  include_uncertainty_bands: true
+  
+  # File naming
+  timestamp_format: "%Y%m%d_%H%M%S"
+  include_location_in_filename: true
+  include_scenario_in_filename: true
+  
+  # Export details
+  export_device_profiles: true
+  export_total_energy: true
+  export_weather_data: true
+  export_model_metadata: true
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: "energy_disaggregation.log"
+  max_file_size: "10MB"
+  backup_count: 5
+  
+  # Component-specific logging
+  components:
+    energy_disaggregator: "INFO"
+    weather_analyzer: "INFO"
+    building_model: "INFO"
+    forecast_engine: "INFO"
+
+# Validation and Quality Control
+quality_control:
+  # Energy balance checks
+  max_energy_balance_error: 2.0  # % - fail if exceeded
+  max_device_allocation: 0.6     # 60% - no single device > 60%
+  min_total_allocation: 0.95     # 95% - devices must account for 95% of energy
+  
+  # Physical realism checks
+  max_power_change_rate: 0.5     # 50% change per hour
+  min_device_correlation: 0.1    # Minimum weather correlation for temp-dependent devices
+  
+  # Data quality checks
+  min_data_completeness: 0.8     # 80% data completeness required
+  max_missing_data_gap: 24       # Hours - maximum continuous missing data
+  outlier_detection_enabled: true
+  outlier_threshold: 3.0         # Standard deviations for outlier detection
+
+# Advanced Features
+advanced:
+  # Machine learning enhancements
+  ml_enhancements:
+    enable_pattern_learning: true
+    enable_anomaly_detection: true
+    enable_trend_extrapolation: true
+    
+  # Adaptive modeling
+  adaptive_modeling:
+    enable_online_learning: false
+    adaptation_rate: 0.05
+    memory_decay_factor: 0.95
+    
+  # Multi-building modeling
+  multi_building:
+    enable_transfer_learning: false
+    similarity_threshold: 0.8
+    building_clustering: false

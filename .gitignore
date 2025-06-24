@@ -41,3 +41,4 @@ config.yaml
 .claude/
 devices.json
 archived_code/
+trained_model*.json

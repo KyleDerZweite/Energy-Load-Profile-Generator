@@ -151,6 +151,31 @@ reward_weights:
 optimization:
   algorithm: "genetic"
   population_size: 40          # Increased for better exploration
-  generations: 5
+  generations: 100
   mutation_rate: 0.08          # Slightly reduced for more focused search
   crossover_rate: 0.8
+  realism_weight: 0.7          # Emphasis on realism
+  accuracy_weight: 0.3         # Balance with accuracy
+
+# REALISM-FIRST Physics Configuration
+physics_first:
+  enabled: true
+  constraint_enforcement: "hard"        # hard|soft - use hard constraints
+  pattern_generation_method: "physics"  # physics|hybrid - start from physics
+  max_constraint_violations: 3          # Allow a few violations for realistic patterns
+  physics_guided_mutation: true         # Use physics-aware mutations
+  pareto_optimization: true             # Multi-objective optimization
+  realism_threshold: 85.0               # Minimum realism score threshold
+  
+  # Physics validation settings
+  validation:
+    strict_mode: false                  # Allow patterns with minor violations
+    thermal_balance_check: true         # Validate thermal system balance
+    device_interaction_check: true      # Check for conflicting devices
+    
+  # Multi-objective optimization weights
+  objectives:
+    realism_priority: 0.7               # Physics compliance priority
+    accuracy_priority: 0.3              # Target matching priority
+    efficiency_priority: 0.0            # Energy efficiency (optional)
+    smoothness_priority: 0.0            # Pattern smoothness (optional)
