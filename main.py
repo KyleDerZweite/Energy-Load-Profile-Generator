@@ -308,10 +308,17 @@ def generate_profiles(args, config: Dict, logger: logging.Logger) -> Dict[str, A
         # Use forecasted total energy for disaggregation
         total_energy = forecast_result['total_energy_forecast']
         
-        # Create time data
-        time_data = pd.DataFrame({
-            'timestamp': pd.date_range(start=start_date, end=end_date, freq='15min')
-        })
+        # Create time data matching weather data range
+        # Use weather data timestamps to ensure exact match
+        if 'Timestamp' in weather_data.columns:
+            time_data = pd.DataFrame({'timestamp': weather_data['Timestamp'].copy()})
+        elif weather_data.index.name == 'datetime' or hasattr(weather_data.index, 'dt'):
+            time_data = pd.DataFrame({'timestamp': weather_data.index.copy()})
+        else:
+            # Fallback to generating time data
+            time_data = pd.DataFrame({
+                'timestamp': pd.date_range(start=start_date, end=end_date, freq='15min')
+            })
         
         # Ensure length consistency
         min_length = min(len(total_energy), len(time_data))

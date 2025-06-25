@@ -349,11 +349,16 @@ Quantity: {device_info.get('quantity', 'N/A')}"""
                            color=color, alpha=0.7)
             bottom += category_total
         
-        ax.plot(df.index, df['total_actual'], 'k-', linewidth=2, label='Total Actual', alpha=0.8)
+        # Plot total actual as overlay line (not stacked on top)
+        ax.plot(df.index, df['total_actual'], 'k-', linewidth=3, label='Total Actual', alpha=0.9, zorder=10)
+        
         ax.set_title('Energy Consumption Breakdown Over Time')
         ax.set_ylabel('Power (kW)')
         ax.legend(loc='upper left', bbox_to_anchor=(1, 1))
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+        
+        # Add grid for better readability
+        ax.grid(True, alpha=0.3, zorder=0)
         
         plt.tight_layout()
         self._save_plot(fig, 'analysis/stacked_energy_breakdown')

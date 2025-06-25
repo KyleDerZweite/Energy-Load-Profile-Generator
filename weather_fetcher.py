@@ -8,6 +8,7 @@ import logging
 import io
 import zipfile
 from weather_database import WeatherDatabase
+from weather_quality_control import WeatherQualityController
 
 class MultiSourceWeatherFetcher:
     """Fetches weather data from multiple sources with fallback support."""
@@ -15,7 +16,22 @@ class MultiSourceWeatherFetcher:
     def __init__(self, config: Dict, db_path: str = "weather_data.db"):
         self.config = config
         self.db = WeatherDatabase(db_path)
+        self.quality_controller = WeatherQualityController()
         self.logger = logging.getLogger(__name__)
+        
+        # Enhanced quality control parameters
+        self.temp_gradient_limit = 2.0     # °C per hour maximum
+        self.outlier_threshold = 3.0       # Standard deviations
+        self.max_consecutive_identical = 3 # Maximum identical readings
+        self.smooth_window = 3             # Moving average window for smoothing
+        
+        # Regional climate bounds for validation
+        self.climate_bounds = {
+            'temp_min': -20.0,    # Absolute minimum for region
+            'temp_max': 42.0,     # Absolute maximum (based on 2019 German record)
+            'typical_min': -10.0, # Typical winter minimum
+            'typical_max': 35.0   # Typical summer maximum
+        }
 
         # City coordinates for German cities (expanded list)
         self.german_city_coords = {
@@ -295,11 +311,11 @@ class MultiSourceWeatherFetcher:
             for i, timestamp in enumerate(timestamps):
                 weather_data.append({
                     'datetime': timestamp,
-                    'temperature': hourly['temperature_2m'][i] if hourly['temperature_2m'][i] is not None else 15.0,
-                    'humidity': hourly['relative_humidity_2m'][i] if hourly['relative_humidity_2m'][i] is not None else 50,
-                    'precipitation': hourly['precipitation'][i] if hourly['precipitation'][i] is not None else 0,
-                    'weather_code': hourly['weather_code'][i] if hourly['weather_code'][i] is not None else 0,
-                    'condition': self._weather_code_to_condition(hourly['weather_code'][i] if hourly['weather_code'][i] is not None else 0)
+                    'temperature': self._safe_float(hourly['temperature_2m'][i], 15.0),
+                    'humidity': self._safe_int(hourly['relative_humidity_2m'][i], 50),
+                    'precipitation': self._safe_float(hourly['precipitation'][i], 0.0),
+                    'weather_code': self._safe_int(hourly['weather_code'][i], 0),
+                    'condition': self._weather_code_to_condition(self._safe_int(hourly['weather_code'][i], 0))
                 })
 
             df = pd.DataFrame(weather_data)
@@ -641,3 +657,256 @@ class MultiSourceWeatherFetcher:
             95: "Thunderstorm", 96: "Thunderstorm with hail", 99: "Thunderstorm with heavy hail"
         }
         return code_map.get(code, "Unknown")
+
+    def fetch_clean_weather_data(self, location: str, start_date: str, end_date: str,
+                                force_refresh: bool = False, preferred_source: str = None) -> pd.DataFrame:
+        """
+        Fetch weather data with comprehensive quality control.
+        
+        Args:
+            location: Location name (e.g., "Bottrop, Germany")
+            start_date: Start date in YYYY-MM-DD format
+            end_date: End date in YYYY-MM-DD format
+            force_refresh: Whether to re-fetch even if data exists
+            preferred_source: Preferred weather source to try first
+            
+        Returns:
+            Clean weather DataFrame with validated temperature data
+        """
+        self.logger.info(f"🔍 Fetching clean weather data for {location}")
+        self.logger.info(f"📅 Date range: {start_date} to {end_date}")
+        
+        # First get raw data using existing method
+        raw_data = self.get_weather_data(location, start_date, end_date, force_refresh, preferred_source)
+        
+        if raw_data.empty:
+            self.logger.error("Failed to fetch raw weather data")
+            return pd.DataFrame()
+        
+        self.logger.info(f"📊 Raw data fetched: {len(raw_data)} records")
+        
+        # Apply quality control and cleaning
+        clean_data = self._apply_quality_control(raw_data, location)
+        
+        # Store clean data in database with enhanced source tag
+        lat, lon = self.get_coordinates(location)
+        source_tag = f"{getattr(raw_data, '_source', 'multi_source')}_cleaned"
+        self.db.store_weather_data(location, clean_data, source_tag, lat, lon)
+        
+        self.logger.info(f"✅ Clean weather data ready: {len(clean_data)} records")
+        return clean_data
+
+    def _apply_quality_control(self, data: pd.DataFrame, location: str) -> pd.DataFrame:
+        """Apply comprehensive quality control to weather data."""
+        self.logger.info("🔧 Applying quality control measures...")
+        
+        data = data.copy()
+        
+        # Step 1: Remove extreme outliers
+        data = self._remove_extreme_outliers(data)
+        
+        # Step 2: Smooth temperature gradients
+        data = self._smooth_temperature_gradients(data)
+        
+        # Step 3: Fix flat-lining periods
+        data = self._fix_flat_lining(data)
+        
+        # Step 4: Apply regional climate validation
+        data = self._apply_climate_bounds(data)
+        
+        # Step 5: Final smoothing pass
+        data = self._final_smoothing(data)
+        
+        # Step 6: Quality validation
+        quality_score = self._validate_final_quality(data)
+        self.logger.info(f"🎯 Final quality score: {quality_score:.1f}%")
+        
+        return data
+
+    def _remove_extreme_outliers(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Remove statistically extreme temperature outliers."""
+        if 'temperature' not in data.columns:
+            return data
+        
+        temps = data['temperature'].dropna()
+        if len(temps) < 10:
+            return data
+        
+        # Calculate outlier bounds
+        q25, q75 = temps.quantile(0.25), temps.quantile(0.75)
+        iqr = q75 - q25
+        lower_bound = q25 - 3.0 * iqr
+        upper_bound = q75 + 3.0 * iqr
+        
+        # Also apply absolute climate bounds
+        lower_bound = max(lower_bound, self.climate_bounds['temp_min'])
+        upper_bound = min(upper_bound, self.climate_bounds['temp_max'])
+        
+        # Count outliers before removal
+        outliers_mask = (data['temperature'] < lower_bound) | (data['temperature'] > upper_bound)
+        outlier_count = outliers_mask.sum()
+        
+        if outlier_count > 0:
+            self.logger.info(f"🚫 Removing {outlier_count} extreme temperature outliers")
+            
+            # Replace outliers with interpolated values
+            data.loc[outliers_mask, 'temperature'] = np.nan
+            data['temperature'] = data['temperature'].interpolate(method='linear')
+        
+        return data
+
+    def _smooth_temperature_gradients(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Smooth unrealistic temperature gradients."""
+        if 'temperature' not in data.columns or len(data) < 2:
+            return data
+        
+        data = data.copy()
+        
+        # Calculate time differences and temperature gradients
+        data['time_diff'] = data.index.to_series().diff().dt.total_seconds() / 3600  # hours
+        data['temp_change'] = data['temperature'].diff()
+        data['temp_gradient'] = abs(data['temp_change'] / data['time_diff'])
+        
+        # Find excessive gradients
+        excessive_mask = data['temp_gradient'] > self.temp_gradient_limit
+        excessive_count = excessive_mask.sum()
+        
+        if excessive_count > 0:
+            self.logger.info(f"🌊 Smoothing {excessive_count} excessive temperature gradients")
+            
+            # Apply moving average smoothing to reduce gradients
+            window_size = max(3, min(7, len(data) // 100))  # Adaptive window size
+            data['temperature_smoothed'] = data['temperature'].rolling(
+                window=window_size, center=True, min_periods=1
+            ).mean()
+            
+            # Replace only the excessive gradient points
+            data.loc[excessive_mask, 'temperature'] = data.loc[excessive_mask, 'temperature_smoothed']
+        
+        # Clean up helper columns
+        data = data.drop(columns=['time_diff', 'temp_change', 'temp_gradient'], errors='ignore')
+        if 'temperature_smoothed' in data.columns:
+            data = data.drop(columns=['temperature_smoothed'])
+        
+        return data
+
+    def _fix_flat_lining(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Fix periods where temperature remains artificially constant."""
+        if 'temperature' not in data.columns or len(data) < 4:
+            return data
+        
+        data = data.copy()
+        
+        # Detect consecutive identical temperatures
+        data['temp_diff'] = data['temperature'].diff()
+        data['is_same'] = (data['temp_diff'] == 0.0) & (data['temperature'].notna())
+        
+        # Find groups of consecutive identical values
+        data['group'] = (data['is_same'] != data['is_same'].shift()).cumsum()
+        
+        flat_periods_fixed = 0
+        
+        for group_id, group in data[data['is_same']].groupby('group'):
+            if len(group) >= self.max_consecutive_identical:
+                # Add small random variation to break flat-lining
+                flat_periods_fixed += 1
+                base_temp = group.iloc[0]['temperature']
+                
+                # Create subtle variation (±0.1°C)
+                variations = np.random.normal(0, 0.05, len(group))
+                new_temps = base_temp + variations
+                
+                # Ensure gradual change rather than random noise
+                if len(group) > 1:
+                    # Create linear interpolation with noise
+                    start_temp = base_temp + variations[0]
+                    end_temp = base_temp + variations[-1]
+                    linear_temps = np.linspace(start_temp, end_temp, len(group))
+                    new_temps = linear_temps + variations * 0.3  # Reduce noise
+                
+                data.loc[group.index, 'temperature'] = new_temps
+        
+        if flat_periods_fixed > 0:
+            self.logger.info(f"🔧 Fixed {flat_periods_fixed} flat-lining periods")
+        
+        # Clean up helper columns
+        data = data.drop(columns=['temp_diff', 'is_same', 'group'], errors='ignore')
+        
+        return data
+
+    def _apply_climate_bounds(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Apply regional climate bounds validation."""
+        if 'temperature' not in data.columns:
+            return data
+        
+        # Apply hard bounds
+        temp_violations = (
+            (data['temperature'] < self.climate_bounds['temp_min']) |
+            (data['temperature'] > self.climate_bounds['temp_max'])
+        )
+        
+        violation_count = temp_violations.sum()
+        if violation_count > 0:
+            self.logger.info(f"🌡️ Correcting {violation_count} climate bound violations")
+            
+            # Replace violations with interpolated values
+            data.loc[temp_violations, 'temperature'] = np.nan
+            data['temperature'] = data['temperature'].interpolate(method='linear')
+        
+        return data
+
+    def _final_smoothing(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Apply final light smoothing to ensure natural temperature patterns."""
+        if 'temperature' not in data.columns or len(data) < 5:
+            return data
+        
+        # Light smoothing with small window
+        data['temperature'] = data['temperature'].rolling(
+            window=3, center=True, min_periods=1
+        ).mean()
+        
+        return data
+
+    def _validate_final_quality(self, data: pd.DataFrame) -> float:
+        """Validate the final data quality after processing."""
+        if data.empty or 'temperature' not in data.columns:
+            return 0.0
+        
+        quality_score = 100.0
+        
+        # Check for remaining flat periods
+        temp_diff = data['temperature'].diff()
+        consecutive_same = (temp_diff == 0.0).sum()
+        if consecutive_same > len(data) * 0.01:  # More than 1% flat
+            quality_score -= 20.0
+        
+        # Check temperature gradients
+        time_diff = data.index.to_series().diff().dt.total_seconds() / 3600
+        temp_gradient = abs(temp_diff / time_diff)
+        excessive_gradients = (temp_gradient > self.temp_gradient_limit).sum()
+        if excessive_gradients > 0:
+            quality_score -= 10.0
+        
+        # Check for missing data
+        missing_pct = data['temperature'].isna().sum() / len(data) * 100
+        quality_score -= missing_pct
+        
+        return max(0.0, quality_score)
+
+    def _safe_float(self, value, default: float) -> float:
+        """Safely convert value to float with default fallback."""
+        try:
+            if value is None or pd.isna(value):
+                return default
+            return float(value)
+        except (ValueError, TypeError):
+            return default
+
+    def _safe_int(self, value, default: int) -> int:
+        """Safely convert value to int with default fallback."""
+        try:
+            if value is None or pd.isna(value):
+                return default
+            return int(value)
+        except (ValueError, TypeError):
+            return default

@@ -393,8 +393,14 @@ class BuildingEnergyModel:
         
         self.logger.info(f"🔮 Forecasting energy for years {forecast_config.forecast_years}")
         
-        # Generate forecast time series
-        forecast_time_data = self._generate_forecast_time_data(forecast_config.forecast_years)
+        # Generate forecast time series using actual weather data timestamps
+        if 'Timestamp' in forecast_weather.columns:
+            forecast_time_data = pd.DataFrame({'timestamp': forecast_weather['Timestamp'].copy()})
+        elif forecast_weather.index.name == 'datetime' or hasattr(forecast_weather.index, 'dt'):
+            forecast_time_data = pd.DataFrame({'timestamp': forecast_weather.index.copy()})
+        else:
+            # Fallback to generating time data
+            forecast_time_data = self._generate_forecast_time_data(forecast_config.forecast_years)
         
         # Extract temperature and create total energy estimates
         temperature = self._extract_temperature_from_weather(forecast_weather)
@@ -666,7 +672,10 @@ class BuildingEnergyModel:
                         time_factors.append(1.0)
                 
                 time_factors = np.array(time_factors)
-                total_energy = total_energy * time_factors
+                
+                # Ensure arrays have same length
+                min_length = min(len(total_energy), len(time_factors))
+                total_energy = total_energy[:min_length] * time_factors[:min_length]
         
         # Apply seasonal adjustments if requested
         if forecast_config.seasonal_adjustment:
@@ -694,7 +703,10 @@ class BuildingEnergyModel:
                 seasonal_factors.append(1.0)
         
         seasonal_factors = np.array(seasonal_factors)
-        return energy * seasonal_factors
+        
+        # Ensure arrays have same length
+        min_length = min(len(energy), len(seasonal_factors))
+        return energy[:min_length] * seasonal_factors[:min_length]
     
     def _estimate_forecast_uncertainty(self, forecast_result: EnergyDisaggregationResult,
                                      forecast_config: ForecastConfig) -> Dict[str, Any]:
@@ -866,8 +878,33 @@ class BuildingEnergyModel:
             with open(weather_analysis_path, 'r') as f:
                 weather_dict = json.load(f)
             
-            # Reconstruct weather analysis (simplified - would need full reconstruction)
-            self.weather_analysis = weather_dict  # Store as dict for now
+            # Reconstruct weather analysis result object
+            from weather_energy_analyzer import WeatherEnergyAnalysisResult, WeatherEnergySignature
+            
+            # Reconstruct signatures
+            heating_signature = None
+            if weather_dict.get('heating_signature'):
+                heating_signature = WeatherEnergySignature(**weather_dict['heating_signature'])
+            
+            cooling_signature = None
+            if weather_dict.get('cooling_signature'):
+                cooling_signature = WeatherEnergySignature(**weather_dict['cooling_signature'])
+            
+            baseload_signature = WeatherEnergySignature(**weather_dict['baseload_signature'])
+            
+            # Create weather analysis result
+            self.weather_analysis = WeatherEnergyAnalysisResult(
+                heating_signature=heating_signature,
+                cooling_signature=cooling_signature,
+                baseload_signature=baseload_signature,
+                weather_independent_load=weather_dict['weather_independent_load'],
+                seasonal_patterns=weather_dict['seasonal_patterns'],
+                temperature_statistics=weather_dict['temperature_statistics'],
+                energy_statistics=weather_dict['energy_statistics'],
+                correlation_analysis=weather_dict['correlation_analysis'],
+                degree_day_analysis=weather_dict['degree_day_analysis'],
+                load_decomposition=weather_dict.get('load_decomposition', {})
+            )
             
         except FileNotFoundError:
             self.logger.warning("⚠️ Weather analysis file not found")
