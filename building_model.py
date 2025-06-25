@@ -648,8 +648,21 @@ class BuildingEnergyModel:
         hdd = np.maximum(0, heating_base - temperature)
         cdd = np.maximum(0, temperature - cooling_base)
         
-        # Base forecast
-        total_energy = base_load + heating_coeff * hdd + cooling_coeff * cdd
+        # Enhanced weather sensitivity for forecasting scenarios
+        # Apply scenario-specific weather response amplification
+        scenario_amplification = 1.0
+        if hasattr(forecast_config, 'weather_scenario'):
+            if 'warm' in forecast_config.weather_scenario.lower() or 'heat' in forecast_config.weather_scenario.lower():
+                # Amplify cooling response for warm scenarios
+                cooling_coeff *= 2.5  # Increased cooling sensitivity
+                scenario_amplification = 1.1  # 10% general increase
+            elif 'cold' in forecast_config.weather_scenario.lower():
+                # Amplify heating response for cold scenarios
+                heating_coeff *= 2.0  # Increased heating sensitivity
+                scenario_amplification = 1.05  # 5% general increase
+        
+        # Base forecast with enhanced weather response
+        total_energy = (base_load + heating_coeff * hdd + cooling_coeff * cdd) * scenario_amplification
         
         # Apply time-of-day patterns
         if hasattr(self.energy_disaggregator, 'learned_parameters'):
@@ -679,14 +692,24 @@ class BuildingEnergyModel:
         
         # Apply seasonal adjustments if requested
         if forecast_config.seasonal_adjustment:
-            total_energy = self._apply_seasonal_adjustments(total_energy, time_data)
+            # Get seasonal factor from forecast scenario
+            seasonal_factor = getattr(forecast_config, 'seasonal_factor', 1.0)
+            total_energy = self._apply_seasonal_adjustments(total_energy, time_data, seasonal_factor)
+        
+        # Apply forecast scenario-specific adjustments
+        if hasattr(forecast_config, 'trend_factor') and forecast_config.trend_factor != 1.0:
+            # Apply growth/decline trend throughout the forecast period
+            n_points = len(total_energy)
+            trend_multiplier = np.linspace(1.0, forecast_config.trend_factor, n_points)
+            total_energy *= trend_multiplier
         
         # Ensure positive energy values
         total_energy = np.maximum(total_energy, base_load * 0.5)
         
         return total_energy
     
-    def _apply_seasonal_adjustments(self, energy: np.ndarray, time_data: pd.DataFrame) -> np.ndarray:
+    def _apply_seasonal_adjustments(self, energy: np.ndarray, time_data: pd.DataFrame, 
+                                  seasonal_factor: float = 1.0) -> np.ndarray:
         """Apply seasonal adjustments to energy forecast."""
         if self.weather_analysis is None:
             return energy
@@ -698,7 +721,10 @@ class BuildingEnergyModel:
         seasonal_factors = []
         for month in time_data['month']:
             if 1 <= month <= 12:
-                seasonal_factors.append(seasonal_patterns[month - 1])
+                # Apply scenario-specific seasonal amplification
+                base_factor = seasonal_patterns[month - 1]
+                enhanced_factor = 1.0 + (base_factor - 1.0) * seasonal_factor
+                seasonal_factors.append(enhanced_factor)
             else:
                 seasonal_factors.append(1.0)
         

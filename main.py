@@ -397,7 +397,7 @@ def forecast_energy(args, config: Dict, logger: logging.Logger) -> Dict[str, Any
     logger.info(f"🎯 Forecasting for years {forecast_years} with scenarios {scenarios}")
     
     # Load historical weather for scenario generation
-    if hasattr(args, 'historical_weather') and os.path.exists(args.historical_weather):
+    if hasattr(args, 'historical_weather') and args.historical_weather and os.path.exists(args.historical_weather):
         historical_weather = pd.read_excel(args.historical_weather)
     else:
         # Use weather from training period as baseline

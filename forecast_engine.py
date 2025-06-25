@@ -138,30 +138,30 @@ class EnergyForecastEngine:
             ),
             'warm_climate': ForecastScenario(
                 name='Warm Climate',
-                description='Climate warming scenario (+2°C)',
+                description='Climate warming scenario (+3°C, increased cooling demand)',
                 weather_scenario=WeatherScenario.WARM_SCENARIO,
-                temperature_adjustment=2.0,
-                seasonal_adjustment=1.0,
-                trend_factor=1.0,
-                uncertainty_factor=1.2
+                temperature_adjustment=3.0,
+                seasonal_adjustment=1.2,  # Enhanced summer patterns
+                trend_factor=1.05,  # 5% growth trend
+                uncertainty_factor=1.3
             ),
             'cold_climate': ForecastScenario(
                 name='Cold Climate',
-                description='Unusually cold conditions (-2°C)',
+                description='Unusually cold conditions (-3°C, increased heating)',
                 weather_scenario=WeatherScenario.COLD_SCENARIO,
-                temperature_adjustment=-2.0,
-                seasonal_adjustment=1.0,
-                trend_factor=1.0,
-                uncertainty_factor=1.2
+                temperature_adjustment=-3.0,
+                seasonal_adjustment=1.2,  # Enhanced winter patterns
+                trend_factor=1.03,  # 3% growth trend
+                uncertainty_factor=1.3
             ),
             'extreme_heat': ForecastScenario(
                 name='Extreme Heat',
-                description='Extreme heat wave conditions (+5°C)',
+                description='Extreme heat wave conditions (+6°C, major cooling impact)',
                 weather_scenario=WeatherScenario.EXTREME_HEAT,
-                temperature_adjustment=5.0,
-                seasonal_adjustment=1.1,
-                trend_factor=1.0,
-                uncertainty_factor=1.5
+                temperature_adjustment=6.0,
+                seasonal_adjustment=1.4,  # Significantly enhanced summer demand
+                trend_factor=1.08,  # 8% growth trend
+                uncertainty_factor=1.6
             )
         }
     
@@ -487,13 +487,19 @@ class EnergyForecastEngine:
         """Create forecast configuration from scenario."""
         from building_model import ForecastConfig
         
-        return ForecastConfig(
+        config = ForecastConfig(
             forecast_years=forecast_years,
             weather_scenario=scenario.weather_scenario.value,
             uncertainty_estimation=True,
             seasonal_adjustment=scenario.seasonal_adjustment != 1.0,
             trend_extrapolation=scenario.trend_factor != 1.0
         )
+        
+        # Add scenario-specific parameters
+        config.seasonal_factor = scenario.seasonal_adjustment
+        config.trend_factor = scenario.trend_factor
+        
+        return config
     
     def _analyze_forecast_uncertainty(self, building_forecast: Dict[str, Any],
                                     scenario: ForecastScenario) -> UncertaintyAnalysis:
